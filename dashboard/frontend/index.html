@@ -20,7 +20,7 @@
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <link rel="stylesheet" href="css/style.css?v=20261106e">
+  <link rel="stylesheet" href="css/style.css?v=20261106g">
 </head>
 <body>
 
@@ -37,14 +37,14 @@
 
       <div class="topbar__right">
         <!-- Indicador de Diagnóstico / Erros da Controladora Epever (0x3200 / 0x3201 / 0x3202) -->
-        <div id="controller-diag-pill" class="diag-pill" data-state="ok" role="status" aria-live="polite" title="Diagnóstico Modbus Epever (0x3200 · 0x3201 · 0x3202)">
+        <div id="controller-diag-pill" class="diag-pill" data-state="offline" role="status" aria-live="polite" title="Diagnóstico Modbus Epever (0x3200 · 0x3201 · 0x3202)">
           <svg class="icon diag-pill__icon diag-pill__icon--ok" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>
           </svg>
           <svg class="icon diag-pill__icon diag-pill__icon--alert" viewBox="0 0 24 24" aria-hidden="true">
             <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>
           </svg>
-          <span id="controller-diag-text">Sem falhas na controladora</span>
+          <span id="controller-diag-text">Controladora offline</span>
         </div>
 
         <div id="status-badge" class="status" data-state="offline">
@@ -223,7 +223,7 @@
 
           <!-- Barramento condutor 1 (Painel -> MPPT) -->
           <div class="conduit" id="flow-link-1" aria-hidden="true">
-            <span class="conduit__pill"><span id="conduit-pv-a">0,00</span> A</span>
+            <span class="conduit__pill"><span id="conduit-pv-a">—</span> A</span>
             <div class="conduit__track">
               <span class="conduit__pulse"></span>
             </div>
@@ -257,7 +257,7 @@
 
           <!-- Barramento condutor 2 (MPPT -> Bateria) -->
           <div class="conduit" id="flow-link-2" aria-hidden="true">
-            <span class="conduit__pill conduit__pill--teal"><span id="conduit-bat-a">0,00</span> A</span>
+            <span class="conduit__pill conduit__pill--teal"><span id="conduit-bat-a">—</span> A</span>
             <div class="conduit__track conduit__track--teal">
               <span class="conduit__pulse"></span>
             </div>
@@ -441,9 +441,9 @@
     </form>
   </dialog>
 
-  <script src="js/models3d.js?v=20261106f"></script>
-  <script src="js/charts.js?v=20261106f"></script>
-  <script src="js/mesh.js?v=20261106f"></script>
-  <script src="js/app.js?v=20261106f"></script>
+  <script src="js/models3d.js?v=20261106g"></script>
+  <script src="js/charts.js?v=20261106g"></script>
+  <script src="js/mesh.js?v=20261106g"></script>
+  <script src="js/app.js?v=20261106g"></script>
 </body>
 </html>

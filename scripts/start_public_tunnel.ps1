@@ -33,3 +33,4 @@ Write-Host " e compartilhe com os avaliadores e colegas do SENAI." -ForegroundCo
 Write-Host "=====================================================================" -ForegroundColor Cyan
 
 & $cloudflaredExe tunnel --url "http://localhost:$LocalPort" --no-autoupdate
+

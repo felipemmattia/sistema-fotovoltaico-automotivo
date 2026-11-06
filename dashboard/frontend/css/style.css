@@ -320,6 +320,21 @@ button {
   height: 14px;
 }
 
+.diag-pill[data-state='offline'] {
+  color: var(--text-3);
+  background-color: var(--raised);
+  border-color: var(--hairline);
+}
+
+.diag-pill[data-state='offline'] .diag-pill__icon--ok {
+  display: inline-block;
+  color: var(--text-3);
+}
+
+.diag-pill[data-state='offline'] .diag-pill__icon--alert {
+  display: none;
+}
+
 .diag-pill[data-state='ok'] .diag-pill__icon--ok {
   display: inline-block;
   color: var(--pos);

@@ -4,15 +4,15 @@
  * para carregamento imediato mesmo sob sinal Wi-Fi fraco a grandes distâncias do veículo.
  */
 
-const CACHE_NAME = 'solar-telemetry-v1';
+const CACHE_NAME = 'solar-telemetry-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
-  '/css/style.css',
-  '/js/models3d.js',
-  '/js/charts.js',
-  '/js/mesh.js',
-  '/js/app.js'
+  '/css/style.css?v=20261106g',
+  '/js/models3d.js?v=20261106g',
+  '/js/charts.js?v=20261106g',
+  '/js/mesh.js?v=20261106g',
+  '/js/app.js?v=20261106g'
 ];
 
 self.addEventListener('install', (event) => {
@@ -39,36 +39,25 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
 
-  // Para endpoints de API (latest/history/settings), prioriza a rede e salva cópia para fallback
+  // Para endpoints de API, nunca serve leituras obsoletas como dados ao vivo se o servidor estiver acessível
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response && response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
-          }
-          return response;
-        })
-        .catch(() => caches.match(request))
+      fetch(request).catch(() => caches.match(request))
     );
     return;
   }
 
-  // Para arquivos da interface (HTML, CSS, JS, fontes), responde do cache e atualiza em segundo plano
+  // Para arquivos da interface (HTML, CSS, JS), prioriza a rede e cai para o cache apenas quando sem conexão
   event.respondWith(
-    caches.match(request).then((cached) => {
-      const networkFetch = fetch(request)
-        .then((response) => {
-          if (response && response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
-          }
-          return response;
-        })
-        .catch(() => cached);
-
-      return cached || networkFetch;
-    })
+    fetch(request)
+      .then((response) => {
+        if (response && response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+        }
+        return response;
+      })
+      .catch(() => caches.match(request))
   );
 });
+

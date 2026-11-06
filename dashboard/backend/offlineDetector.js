@@ -7,7 +7,7 @@
 class OfflineDetector {
   constructor(timeoutMs = 180000) {
     this.timeoutMs = timeoutMs;
-    this.lastHeartbeat = Date.now();
+    this.lastHeartbeat = null;
     this.isOnline = false;
     this.onStatusChangeCallbacks = [];
 
@@ -23,6 +23,7 @@ class OfflineDetector {
   }
 
   checkHealth() {
+    if (!this.lastHeartbeat) return;
     const elapsed = Date.now() - this.lastHeartbeat;
     if (elapsed > this.timeoutMs && this.isOnline) {
       this.isOnline = false;
@@ -44,8 +45,10 @@ class OfflineDetector {
   getStatus() {
     return {
       online: this.isOnline,
-      last_heartbeat: new Date(this.lastHeartbeat).toISOString(),
-      seconds_since_last_packet: Math.round((Date.now() - this.lastHeartbeat) / 1000),
+      last_heartbeat: this.lastHeartbeat ? new Date(this.lastHeartbeat).toISOString() : null,
+      seconds_since_last_packet: this.lastHeartbeat
+        ? Math.round((Date.now() - this.lastHeartbeat) / 1000)
+        : null,
       timeout_threshold_seconds: this.timeoutMs / 1000
     };
   }

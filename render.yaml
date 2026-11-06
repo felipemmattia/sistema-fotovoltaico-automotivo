@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: telemetria-solar-senai
+    runtime: docker
+    dockerfilePath: ./dashboard/Dockerfile
+    dockerContext: ./dashboard
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: TELEMETRY_API_KEY
+        value: solar_sec_key_production_2026_epever

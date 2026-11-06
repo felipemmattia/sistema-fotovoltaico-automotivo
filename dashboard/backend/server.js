@@ -6,6 +6,7 @@
 
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const path = require('path');
 const cors = require('cors');
 const crypto = require('crypto');
@@ -17,6 +18,7 @@ const offlineDetector = require('./offlineDetector');
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.TELEMETRY_API_KEY || 'solar_sec_key_production_2026_epever';
+const PUBLIC_KEEPALIVE_URL = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL || '';
 
 const app = express();
 const server = http.createServer(app);
@@ -51,7 +53,7 @@ offlineDetector.onStatusChange((onlineState, lastHeartbeat) => {
   broadcast({
     type: 'STATUS_UPDATE',
     online: onlineState,
-    last_heartbeat: new Date(lastHeartbeat).toISOString()
+    last_heartbeat: lastHeartbeat ? new Date(lastHeartbeat).toISOString() : null
   });
 });
 
@@ -117,27 +119,27 @@ app.post('/api/telemetry', (req, res) => {
 });
 
 /**
- * Retorna a leitura mais recente, as configurações do veículo e o estado de conexão.
+ * Retorna a leitura atual apenas se o sistema estiver online, evitando exibir dados antigos como atuais.
  */
 app.get('/api/telemetry/latest', (req, res) => {
   const latest = db.getLatest();
   const settings = db.getSettings();
   const status = offlineDetector.getStatus();
 
-  let enrichedLatest = null;
-  if (latest) {
+  let activeTelemetry = null;
+  if (status.online && latest) {
     const diag = decodeControllerDiagnostics(latest, settings.system_voltage || 12);
-    enrichedLatest = {
+    activeTelemetry = {
       ...latest,
       controller_errors: diag.controller_errors,
       charging_stage: diag.charging_stage || latest.charging_stage || null,
-      online: status.online
+      online: true
     };
   }
 
   return res.json({
     success: true,
-    data: enrichedLatest,
+    data: activeTelemetry,
     vehicle_name: settings.vehicle_name,
     status: status,
     mesh_nodes: peers.size
@@ -181,7 +183,7 @@ app.put('/api/settings', (req, res) => {
 });
 
 /**
- * Endpoint de verificação de integridade do serviço.
+ * Endpoint de verificação de integridade do serviço (utilizado também por monitores 24/7).
  */
 app.get('/api/health', (req, res) => {
   return res.json({
@@ -203,14 +205,14 @@ wss.on('connection', (ws) => {
   const settings = db.getSettings();
   const status = offlineDetector.getStatus();
 
-  let enrichedLatest = null;
-  if (latest) {
+  let activeTelemetry = null;
+  if (status.online && latest) {
     const diag = decodeControllerDiagnostics(latest, settings.system_voltage || 12);
-    enrichedLatest = {
+    activeTelemetry = {
       ...latest,
       controller_errors: diag.controller_errors,
       charging_stage: diag.charging_stage || latest.charging_stage || null,
-      online: status.online
+      online: true
     };
   }
 
@@ -220,7 +222,7 @@ wss.on('connection', (ws) => {
       peer_id: peerId,
       mesh_peers: Array.from(peers.keys()),
       payload: {
-        latest: enrichedLatest,
+        latest: activeTelemetry,
         settings: settings,
         status: status
       }
@@ -237,7 +239,6 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // Encaminha ofertas, respostas e candidatos ICE entre navegadores para formar a rede P2P
     if (msg.type === 'SIGNAL_RELAY' && msg.target && peers.has(msg.target)) {
       const targetWs = peers.get(msg.target);
       if (targetWs && targetWs.readyState === 1) {
@@ -250,7 +251,6 @@ wss.on('connection', (ws) => {
         );
       }
     } else if (msg.type === 'MESH_RELAY_PACKET' && msg.payload) {
-      // Permite que um nó próximo ao veículo retransmita pacotes recebidos para outros nós
       broadcast(
         {
           type: 'MESH_RELAY_PACKET',
@@ -267,6 +267,15 @@ wss.on('connection', (ws) => {
     broadcastMeshTopology();
   });
 });
+
+// Keep-alive automático para manter instâncias em nuvem (ex.: Render Free Tier) ativas 24/7
+if (PUBLIC_KEEPALIVE_URL) {
+  setInterval(() => {
+    const target = `${PUBLIC_KEEPALIVE_URL.replace(/\/$/, '')}/api/health`;
+    const client = target.startsWith('https') ? https : http;
+    client.get(target, () => {}).on('error', () => {});
+  }, 10 * 60 * 1000);
+}
 
 server.listen(PORT, () => {
   console.log('=======================================================');
