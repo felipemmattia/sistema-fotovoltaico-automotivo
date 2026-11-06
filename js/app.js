@@ -111,6 +111,50 @@ document.addEventListener('DOMContentLoaded', () => {
   const models3d = window.StudioModels3D ? new window.StudioModels3D() : null;
 
   // ==========================================================================
+  // Resolução dinâmica de origem (suporte a domínio fixo DuckDNS + Túnel da Sala de Aula)
+  // ==========================================================================
+  let backendOrigin = '';
+  const isStaticCustomDomain =
+    location.hostname.endsWith('.duckdns.org') || location.hostname.endsWith('.github.io');
+
+  async function resolveBackendOrigin() {
+    if (!isStaticCustomDomain) {
+      backendOrigin = '';
+      return '';
+    }
+    try {
+      const ghRes = await fetch(
+        `https://api.github.com/repos/felipemmattia/sistema-fotovoltaico-automotivo/contents/runtime-config.json?ref=gh-pages&_=${Date.now()}`,
+        { headers: { Accept: 'application/vnd.github.v3.raw' }, cache: 'no-store' }
+      );
+      if (ghRes.ok) {
+        const cfg = await ghRes.json();
+        if (cfg && cfg.tunnel_url) {
+          backendOrigin = cfg.tunnel_url.replace(/\/+$/, '');
+          return backendOrigin;
+        }
+      }
+    } catch {}
+
+    try {
+      const localRes = await fetch(`/runtime-config.json?_=${Date.now()}`, { cache: 'no-store' });
+      if (localRes.ok) {
+        const cfg = await localRes.json();
+        if (cfg && cfg.tunnel_url) {
+          backendOrigin = cfg.tunnel_url.replace(/\/+$/, '');
+          return backendOrigin;
+        }
+      }
+    } catch {}
+
+    return backendOrigin;
+  }
+
+  function apiUrl(path) {
+    return `${backendOrigin}${path}`;
+  }
+
+  // ==========================================================================
   // Barra de Estado de Carga (Gradiente Dinâmico + Partículas E -> D)
   // ==========================================================================
   class SocBarAnimator {
@@ -633,9 +677,25 @@ document.addEventListener('DOMContentLoaded', () => {
   // ==========================================================================
   // Conexão WebSocket e Sinalização P2P
   // ==========================================================================
-  function connectWebSocket() {
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${location.host}`);
+  async function connectWebSocket() {
+    if (isStaticCustomDomain) {
+      await resolveBackendOrigin();
+    }
+    let wsUrl;
+    if (backendOrigin) {
+      wsUrl = backendOrigin.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:');
+    } else {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = `${protocol}//${location.host}`;
+    }
+
+    let ws;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch {
+      setTimeout(connectWebSocket, 3000);
+      return;
+    }
 
     if (meshRepeater) meshRepeater.attachSignalingSocket(ws);
 
@@ -1039,7 +1099,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const saveBtn = $('btn-save-vehicle');
     saveBtn.disabled = true;
     try {
-      const res = await fetch('/api/settings', {
+      const res = await fetch(apiUrl('/api/settings'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -1083,7 +1143,7 @@ document.addEventListener('DOMContentLoaded', () => {
     state.period = period;
     setText('chart-sub', CHART_SUBTITLES[period] || '');
     try {
-      const res = await fetch(`/api/telemetry/history?period=${period}`);
+      const res = await fetch(apiUrl(`/api/telemetry/history?period=${period}`));
       const result = await res.json();
       if (result.success) chart.updateData(result.data, period);
     } catch (err) {
@@ -1139,27 +1199,33 @@ document.addEventListener('DOMContentLoaded', () => {
   // Inicializa em estado Offline limpo (sem exibir valores antigos/falsos como atuais)
   clearLiveReadings();
 
-  fetch('/api/telemetry/latest')
-    .then((r) => r.json())
-    .then((r) => {
-      if (!r.success) return;
-      if (r.vehicle_name && !state.settings.vehicle_name) {
-        applySettings({ vehicle_name: r.vehicle_name });
-      }
-      const isOnline = r.status ? Boolean(r.status.online) : false;
-      setOnline(isOnline);
-      if (isOnline && r.data && !state.latest) {
-        renderTelemetry(r.data, false);
-      }
-    })
-    .catch(() => {});
+  async function initConnection() {
+    await resolveBackendOrigin();
 
-  fetch('/api/settings')
-    .then((r) => r.json())
-    .then((r) => r.success && applySettings(r.data))
-    .catch(() => {});
+    fetch(apiUrl('/api/telemetry/latest'))
+      .then((r) => r.json())
+      .then((r) => {
+        if (!r.success) return;
+        if (r.vehicle_name && !state.settings.vehicle_name) {
+          applySettings({ vehicle_name: r.vehicle_name });
+        }
+        const isOnline = r.status ? Boolean(r.status.online) : false;
+        setOnline(isOnline);
+        if (isOnline && r.data && !state.latest) {
+          renderTelemetry(r.data, false);
+        }
+      })
+      .catch(() => {});
 
-  connectWebSocket();
-  fetchHistory('hours');
-  setInterval(() => fetchHistory(state.period), 60000);
+    fetch(apiUrl('/api/settings'))
+      .then((r) => r.json())
+      .then((r) => r.success && applySettings(r.data))
+      .catch(() => {});
+
+    connectWebSocket();
+    fetchHistory('hours');
+    setInterval(() => fetchHistory(state.period), 60000);
+  }
+
+  initConnection();
 });
