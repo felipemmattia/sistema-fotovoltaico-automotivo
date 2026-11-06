@@ -24,8 +24,45 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-// Registro de nós conectados para sinalização WebRTC P2P Mesh
+// Registro de nós conectados para sinalização WebRTC P2P Mesh e deduplicação de Uplink P2P
 const peers = new Map();
+const recentUplinkPackets = new Map();
+
+function ingestTelemetryPacket(rawBody, relayMeta = null) {
+  const settings = db.getSettings();
+  const sanitized = sanitizeTelemetryPayload(rawBody, settings.system_voltage || 12);
+
+  // Deduplicação para evitar gravação duplicada quando múltiplos nós P2P entregam o mesmo pacote do carro
+  const dedupKey =
+    rawBody.packet_id ||
+    `${sanitized.device_id}_${sanitized.pv_voltage}_${sanitized.battery_voltage}_${sanitized.pv_power}`;
+  const now = Date.now();
+  const lastSeen = recentUplinkPackets.get(dedupKey);
+  if (lastSeen && now - lastSeen < 900) {
+    return { deduplicated: true, record: db.getLatest() };
+  }
+  recentUplinkPackets.set(dedupKey, now);
+  if (recentUplinkPackets.size > 200) {
+    const oldestKey = recentUplinkPackets.keys().next().value;
+    recentUplinkPackets.delete(oldestKey);
+  }
+
+  offlineDetector.recordPacket();
+
+  const savedRecord = db.insertTelemetry({
+    ...sanitized,
+    uplink_via: relayMeta ? relayMeta.via : 'direct',
+    uplink_hops: relayMeta ? relayMeta.hops || 1 : 0,
+    online: true
+  });
+
+  broadcast({
+    type: 'TELEMETRY_LIVE',
+    payload: savedRecord
+  });
+
+  return { deduplicated: false, record: savedRecord, sanitized };
+}
 
 app.use(cors());
 app.use(express.json({ limit: '100kb' }));
@@ -72,25 +109,12 @@ app.post('/api/telemetry', (req, res) => {
       return res.status(401).json({ success: false, error: 'Chave de API inválida' });
     }
 
-    const settings = db.getSettings();
-    const sanitized = sanitizeTelemetryPayload(req.body, settings.system_voltage || 12);
-
-    offlineDetector.recordPacket();
-
-    const savedRecord = db.insertTelemetry({
-      ...sanitized,
-      online: true
-    });
-
-    broadcast({
-      type: 'TELEMETRY_LIVE',
-      payload: savedRecord
-    });
+    const { record: savedRecord, sanitized } = ingestTelemetryPacket(req.body, null);
 
     // Intervalo adaptativo: 10s quando sem usuários ativos; 1s a 5s conforme proximidade Wi-Fi (RSSI)
     const activeClients = peers.size;
     const rssi =
-      sanitized.wifi_rssi !== null && sanitized.wifi_rssi !== undefined
+      sanitized && sanitized.wifi_rssi !== null && sanitized.wifi_rssi !== undefined
         ? sanitized.wifi_rssi
         : -80;
 
@@ -114,6 +138,30 @@ app.post('/api/telemetry', (req, res) => {
     });
   } catch (err) {
     console.error('[API] Erro em /api/telemetry:', err.message);
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Recebe pacotes de telemetria do carro retransmitidos pela malha P2P (Uplink Mesh)
+ * até o computador principal, que então publica para toda a web em tempo real.
+ */
+app.post('/api/telemetry/uplink', (req, res) => {
+  try {
+    const payload = req.body && req.body.payload ? req.body.payload : req.body;
+    const hops = (req.body && req.body.hop) || 1;
+    const fromPeer = (req.body && req.body.from) || 'mesh_peer';
+    const { deduplicated, record } = ingestTelemetryPacket(payload, {
+      via: `p2p_uplink:${fromPeer}`,
+      hops
+    });
+    return res.status(201).json({
+      success: true,
+      deduplicated,
+      timestamp: record ? record.timestamp : null,
+      mesh_nodes: peers.size
+    });
+  } catch (err) {
     return res.status(400).json({ success: false, error: err.message });
   }
 });
@@ -249,6 +297,16 @@ wss.on('connection', (ws) => {
             signal: msg.signal
           })
         );
+      }
+    } else if (msg.type === 'MESH_UPLINK_INGEST' && msg.payload) {
+      // Pacote capturado perto do veículo e entregue ao computador principal via malha P2P
+      try {
+        ingestTelemetryPacket(msg.payload, {
+          via: `p2p_ws:${peerId}`,
+          hops: msg.hop || 1
+        });
+      } catch (err) {
+        console.warn('[MESH UPLINK] Pacote descartado:', err.message);
       }
     } else if (msg.type === 'MESH_RELAY_PACKET' && msg.payload) {
       broadcast(

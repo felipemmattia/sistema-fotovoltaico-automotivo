@@ -487,6 +487,7 @@ interval:
             (unsigned int)dis_stat
           );
           id(telemetry_payload) = std::string(buf);
+          id(mesh_telemetry_json).publish_state(id(telemetry_payload));
           id(last_send_millis) = now_ms;
           ESP_LOGD("EPEVER_TELEMETRY", "Payload: %s", buf);
 
@@ -518,6 +519,12 @@ interval:
                         }
 
 # Manual Reset button for peak power counter
+text_sensor:
+  - platform: template
+    name: "Mesh Telemetry JSON"
+    id: mesh_telemetry_json
+    internal: false
+
 button:
   - platform: template
     name: "Zerar Potência de Pico FV"
