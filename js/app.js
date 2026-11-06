@@ -628,28 +628,31 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ==========================================================================
-  // Rede Mesh P2P de Retransmissão entre Navegadores
+  // Rede Mesh P2P de Uplink (Carro -> Nós P2P -> Computador Principal -> Web)
   // ==========================================================================
   const meshRepeater = window.TelemetryMeshRepeater
     ? new window.TelemetryMeshRepeater({
+        getApiUrl: apiUrl,
         onTelemetryRelay: (payload) => {
           if (!payload || payload.online === false) return;
           setOnline(true);
           if (!state.wsConnected) {
-            setText('ws-state', 'Recebendo via Mesh P2P');
+            setText('ws-state', 'Ponte P2P ativa');
           }
           renderTelemetry(payload, true);
         },
         onSettingsRelay: (settings) => {
           applySettings(settings);
         },
-        onTopologyChange: ({ totalNodes, directPeers }) => {
-          if (totalNodes <= 1) {
-            setText('mesh-state', 'Ativa · 1 nó repetidor');
+        onTopologyChange: ({ totalNodes, directPeers, vehicleEdgeConnected }) => {
+          if (vehicleEdgeConnected) {
+            setText('mesh-state', `Ponte carro → servidor (${totalNodes} nós)`);
+          } else if (totalNodes <= 1) {
+            setText('mesh-state', 'Ponte P2P · 1 nó ativo');
           } else if (directPeers > 0) {
-            setText('mesh-state', `Retransmitindo · ${totalNodes} nós (${directPeers} P2P)`);
+            setText('mesh-state', `Ponte P2P · ${totalNodes} nós (${directPeers} links)`);
           } else {
-            setText('mesh-state', `Ativa · ${totalNodes} nós repetidores`);
+            setText('mesh-state', `Ponte P2P · ${totalNodes} nós ativos`);
           }
         }
       })
