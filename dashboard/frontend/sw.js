@@ -4,15 +4,15 @@
  * para carregamento imediato mesmo sob sinal Wi-Fi fraco a grandes distâncias do veículo.
  */
 
-const CACHE_NAME = 'solar-telemetry-v2';
+const CACHE_NAME = 'solar-telemetry-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
-  '/css/style.css?v=20261106g',
-  '/js/models3d.js?v=20261106g',
-  '/js/charts.js?v=20261106g',
-  '/js/mesh.js?v=20261106g',
-  '/js/app.js?v=20261106g'
+  '/css/style.css?v=20261106h',
+  '/js/models3d.js?v=20261106h',
+  '/js/charts.js?v=20261106h',
+  '/js/mesh.js?v=20261106h',
+  '/js/app.js?v=20261106h'
 ];
 
 self.addEventListener('install', (event) => {
@@ -39,11 +39,12 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
 
-  // Para endpoints de API, nunca serve leituras obsoletas como dados ao vivo se o servidor estiver acessível
-  if (url.pathname.startsWith('/api/')) {
-    event.respondWith(
-      fetch(request).catch(() => caches.match(request))
-    );
+  // Nunca intercepta chamadas externas (API do GitHub / túnel Cloudflare) ou runtime-config
+  if (
+    url.origin !== self.location.origin ||
+    url.pathname.startsWith('/api/') ||
+    url.pathname.endsWith('/runtime-config.json')
+  ) {
     return;
   }
 

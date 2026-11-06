@@ -13,3 +13,4 @@ services:
         value: 3000
       - key: TELEMETRY_API_KEY
         value: solar_sec_key_production_2026_epever
+

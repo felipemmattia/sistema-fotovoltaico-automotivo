@@ -8,7 +8,9 @@ node_modules/
 
 # Credenciais, redes Wi-Fi e variáveis de ambiente pessoais (NUNCA versionar)
 .env
+.env.*
 **/.env
+**/.env.*
 esphome/secrets.yaml
 **/secrets.yaml
 
