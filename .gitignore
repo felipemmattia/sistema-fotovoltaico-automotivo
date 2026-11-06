@@ -1,0 +1,26 @@
+# Dependências e diretórios de build
+node_modules/
+**/node_modules/
+.esphome/
+**/.esphome/
+.pioenvs/
+.piolibdeps/
+
+# Credenciais, redes Wi-Fi e variáveis de ambiente pessoais (NUNCA versionar)
+.env
+**/.env
+esphome/secrets.yaml
+**/secrets.yaml
+
+# Dados locais de telemetria em execução e binários auxiliares
+dashboard/backend/data/telemetry_history.jsonl
+scripts/bin/
+
+# Arquivos temporários e artefatos de análise/decodificação
+scratch/
+*.rea
+*.dll
+*.deps.json
+*.log
+.DS_Store
+Thumbs.db

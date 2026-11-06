@@ -1,0 +1,19 @@
+services:
+  solar-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: solar_telemetry_dashboard
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - TELEMETRY_API_KEY=solar_sec_key_production_2026_epever
+    volumes:
+      - solar_db_data:/app/backend/data
+
+volumes:
+  solar_db_data:
+    driver: local
