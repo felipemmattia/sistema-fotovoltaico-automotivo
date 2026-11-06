@@ -22,10 +22,10 @@ class StudioModels3D {
       pvPower: 0,
       pvUtilization: 0,
       generating: false,
-      soc: 59,
-      voltage: 12.69,
-      temp: 26.5,
-      online: true,
+      soc: 0,
+      voltage: 0,
+      temp: -10,
+      online: false,
       dark: document.documentElement.getAttribute('data-theme') === 'dark'
     };
 

@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const $ = (id) => document.getElementById(id);
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  // Registro do Service Worker para funcionamento offline-first em locais afastados do veículo
+  // Registro do Service Worker para cache estático da interface
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
@@ -47,6 +47,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const el = $(id);
     if (!el) return;
     if (typeof nextValue !== 'number' || !isFinite(nextValue)) {
+      const prev = tweenState.get(id);
+      if (prev && prev.raf) cancelAnimationFrame(prev.raf);
       el.textContent = '—';
       tweenState.delete(id);
       return;
@@ -124,7 +126,6 @@ document.addEventListener('DOMContentLoaded', () => {
       this.sheenX = -0.3;
       this.lastTime = performance.now();
 
-      // Paradas de cor conforme a carga da bateria (0% vermelho -> 100% verde)
       this.colorStops = [
         {
           at: 0,
@@ -204,28 +205,32 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     updateState({ soc, powerW, nominalWp, online }) {
-      if (typeof soc === 'number' && isFinite(soc)) {
-        this.soc = Math.max(0, Math.min(100, soc));
-      } else {
-        this.soc = 0;
+      if (typeof online === 'boolean') {
+        this.online = online;
       }
-      if (typeof powerW === 'number' && isFinite(powerW)) {
-        this.powerW = Math.max(0, powerW);
+      if (!this.online) {
+        this.soc = 0;
+        this.powerW = 0;
+        this.particles = [];
+      } else {
+        this.soc = typeof soc === 'number' && isFinite(soc) ? Math.max(0, Math.min(100, soc)) : 0;
+        this.powerW = typeof powerW === 'number' && isFinite(powerW) ? Math.max(0, powerW) : 0;
       }
       if (typeof nominalWp === 'number' && nominalWp > 0) {
         this.nominalWp = nominalWp;
       }
-      if (typeof online === 'boolean') {
-        this.online = online;
-      }
 
       if (!this.fillEl) return;
       this.fillEl.style.width = `${this.soc}%`;
-      this.fillEl.classList.toggle('is-has-charge', this.soc > 0);
+      this.fillEl.classList.toggle('is-has-charge', this.online && this.soc > 0);
 
-      const c = this.computeGradientColors(this.soc);
-      this.fillEl.style.background = `linear-gradient(90deg, rgb(${c.left.join(',')}) 0%, rgb(${c.mid.join(',')}) 52%, rgb(${c.right.join(',')}) 100%)`;
-      this.fillEl.style.boxShadow = `inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 0 10px rgba(${c.glow.join(',')}, 0.28)`;
+      if (this.soc > 0) {
+        const c = this.computeGradientColors(this.soc);
+        this.fillEl.style.background = `linear-gradient(90deg, rgb(${c.left.join(',')}) 0%, rgb(${c.mid.join(',')}) 52%, rgb(${c.right.join(',')}) 100%)`;
+        this.fillEl.style.boxShadow = `inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 0 10px rgba(${c.glow.join(',')}, 0.28)`;
+      } else {
+        this.fillEl.style.boxShadow = 'none';
+      }
       this.resize();
     }
 
@@ -272,7 +277,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       this.resize();
 
-      if (this.ctx && this.width > 4 && this.height > 2 && this.soc > 0) {
+      if (this.ctx && this.width > 4 && this.height > 2 && this.online && this.soc > 0) {
         const ctx = this.ctx;
         ctx.save();
         ctx.scale(this.dpr, this.dpr);
@@ -341,6 +346,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         ctx.restore();
+      } else if (this.ctx && this.width > 0 && this.height > 0) {
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
       }
 
       requestAnimationFrame((t) => this.tick(t));
@@ -445,6 +452,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const listEl = $('ctrl-alert-list');
     const titleEl = $('ctrl-alert-title');
 
+    if (!state.online || !d) {
+      if (pill) {
+        pill.dataset.state = 'offline';
+        pill.title = 'Controladora offline — sem comunicação Modbus ativa';
+      }
+      if (pillText) pillText.textContent = 'Controladora offline';
+      if (banner) banner.hidden = true;
+      return;
+    }
+
     const alerts = extractControllerAlerts(d, state.settings.system_voltage || 12);
 
     if (!alerts.length) {
@@ -498,12 +515,82 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ==========================================================================
+  // Limpeza completa quando Offline (nunca exibe valores falsos/antigos como ao vivo)
+  // ==========================================================================
+  function clearLiveReadings() {
+    state.latest = null;
+    try {
+      localStorage.removeItem('solar_last_telemetry');
+    } catch {}
+
+    const numericIds = [
+      'pv-power-val',
+      'peak-power-val',
+      'energy-today-val',
+      'energy-total-val',
+      'kpi-battery-voltage',
+      'soc-val',
+      'ext-temp-val',
+      'pv-voltage-val',
+      'pv-current-val',
+      'pv-power-flow',
+      'battery-voltage-val',
+      'battery-current-val',
+      'battery-power-val',
+      'conduit-pv-a',
+      'conduit-bat-a',
+      'controller-load-val',
+      'utilization-val',
+      'stored-energy'
+    ];
+    numericIds.forEach((id) => setNumber(id, NaN, 1, false));
+
+    setText('device-id', '—');
+    setText('rssi-val', '—');
+    setText('rssi-quality', '');
+    setText('interval-val', '—');
+    setText('charge-eta-val', '—');
+    setText('charge-eta-sub', 'Controladora offline — aguardando conexão');
+
+    setStateIndicator($('temp-status'), 'Offline', '');
+    setStateIndicator($('charge-state'), 'Sem comunicação', 'bad');
+
+    const wire1 = $('flow-link-1');
+    const wire2 = $('flow-link-2');
+    if (wire1) wire1.classList.remove('is-active');
+    if (wire2) wire2.classList.remove('is-active');
+    document.querySelectorAll('.node').forEach((node) => node.classList.remove('is-live'));
+
+    socAnimator.updateState({
+      soc: 0,
+      powerW: 0,
+      nominalWp: (state.settings.solar_kwp || 0.45) * 1000,
+      online: false
+    });
+
+    if (models3d) {
+      models3d.updateTelemetry({
+        pvPower: 0,
+        pvUtilization: 0,
+        generating: false,
+        soc: 0,
+        voltage: 0,
+        temp: -10,
+        online: false
+      });
+    }
+
+    renderControllerDiagnostics(null);
+  }
+
+  // ==========================================================================
   // Rede Mesh P2P de Retransmissão entre Navegadores
   // ==========================================================================
   const meshRepeater = window.TelemetryMeshRepeater
     ? new window.TelemetryMeshRepeater({
         onTelemetryRelay: (payload) => {
-          setOnline(payload.online !== false);
+          if (!payload || payload.online === false) return;
+          setOnline(true);
           if (!state.wsConnected) {
             setText('ws-state', 'Recebendo via Mesh P2P');
           }
@@ -572,15 +659,21 @@ document.addEventListener('DOMContentLoaded', () => {
           }
           if (msg.payload.settings) applySettings(msg.payload.settings);
           setOnline(msg.payload.status ? msg.payload.status.online : false);
-          if (msg.payload.latest) {
+          if (state.online && msg.payload.latest) {
             renderTelemetry(msg.payload.latest, false);
             if (meshRepeater) meshRepeater.relayPacket('TELEMETRY', msg.payload.latest);
+          } else {
+            clearLiveReadings();
           }
           break;
         case 'TELEMETRY_LIVE':
           setOnline(msg.payload.online !== false);
-          renderTelemetry(msg.payload, true);
-          if (meshRepeater) meshRepeater.relayPacket('TELEMETRY', msg.payload);
+          if (state.online) {
+            renderTelemetry(msg.payload, true);
+            if (meshRepeater) meshRepeater.relayPacket('TELEMETRY', msg.payload);
+          } else {
+            clearLiveReadings();
+          }
           break;
         case 'STATUS_UPDATE':
           setOnline(msg.online);
@@ -596,7 +689,10 @@ document.addEventListener('DOMContentLoaded', () => {
           if (meshRepeater) meshRepeater.handleSignal(msg.from, msg.signal);
           break;
         case 'MESH_RELAY_PACKET':
-          if (msg.payload) renderTelemetry(msg.payload, true);
+          if (msg.payload && msg.payload.online !== false) {
+            setOnline(true);
+            renderTelemetry(msg.payload, true);
+          }
           break;
       }
     };
@@ -644,12 +740,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderTelemetry(d, isLive) {
-    if (!d) return;
+    if (!d || !state.online || d.online === false) {
+      clearLiveReadings();
+      return;
+    }
     state.latest = d;
-
-    try {
-      localStorage.setItem('solar_last_telemetry', JSON.stringify(d));
-    } catch {}
 
     const ts = new Date(d.timestamp || Date.now());
     if (isLive && state.lastPacketAt) {
@@ -677,7 +772,7 @@ document.addEventListener('DOMContentLoaded', () => {
       soc: soc === null ? 0 : soc,
       powerW: activePower,
       nominalWp: (state.settings.solar_kwp || 0.45) * 1000,
-      online: state.online
+      online: true
     });
 
     // Temperatura da bateria (sensor NTC externo)
@@ -777,7 +872,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setText('capacity-val', s.battery_capacity_ah ? fmt(s.battery_capacity_ah, 0) : '—');
     setText('system-voltage-val', s.system_voltage ? String(s.system_voltage) : '—');
 
-    if (!d) return;
+    if (!state.online || !d) return;
+
     const utilization =
       wp && typeof d.pv_power === 'number' ? Math.min(100, (d.pv_power / wp) * 100) : null;
     setNumber('utilization-val', utilization, 1, isLive);
@@ -790,7 +886,7 @@ document.addEventListener('DOMContentLoaded', () => {
         soc: typeof d.battery_soc === 'number' ? d.battery_soc : 0,
         voltage: typeof d.battery_voltage === 'number' ? d.battery_voltage : 12,
         temp: typeof d.external_temp === 'number' ? d.external_temp : 25,
-        online: state.online
+        online: true
       });
     }
 
@@ -805,7 +901,7 @@ document.addEventListener('DOMContentLoaded', () => {
       totalCapacityWh !== null && soc !== null ? totalCapacityWh * (soc / 100) : null;
     setNumber('stored-energy', stored, 0, isLive);
 
-    const genPowerW = state.online ? Math.max(d.pv_power || 0, d.battery_power || 0) : 0;
+    const genPowerW = Math.max(d.pv_power || 0, d.battery_power || 0);
     if (totalCapacityWh === null || soc === null) {
       setText('charge-eta-val', '—');
       setText('charge-eta-sub', 'Aguardando leitura da bateria');
@@ -814,7 +910,7 @@ document.addEventListener('DOMContentLoaded', () => {
       setText('charge-eta-sub', `Banco em 100% (${fmt(totalCapacityWh, 0)} Wh)`);
     } else {
       const remainingWh = Math.max(0, totalCapacityWh - (stored || 0));
-      if (!state.online || genPowerW <= 0.5) {
+      if (genPowerW <= 0.5) {
         setText('charge-eta-val', 'Aguardando geração');
         setText('charge-eta-sub', `Faltam ${fmt(remainingWh, 0)} Wh para 100%`);
       } else {
@@ -831,27 +927,33 @@ document.addEventListener('DOMContentLoaded', () => {
       soc: soc === null ? 0 : soc,
       powerW: genPowerW,
       nominalWp: wp || 450,
-      online: state.online
+      online: true
     });
     renderControllerDiagnostics(d);
   }
 
   function setOnline(isOnline) {
-    state.online = Boolean(isOnline);
+    const nextOnline = Boolean(isOnline);
+    const wasOnline = state.online;
+    state.online = nextOnline;
+
     const badge = $('status-badge');
     if (badge) badge.dataset.state = state.online ? 'online' : 'offline';
     setText('status-text', state.online ? 'Online' : 'Offline');
-    updateChargeState();
-    if (models3d) models3d.updateTelemetry({ online: state.online });
-    socAnimator.updateState({
-      soc: state.latest && typeof state.latest.battery_soc === 'number' ? state.latest.battery_soc : 0,
-      powerW: state.latest ? Math.max(state.latest.pv_power || 0, state.latest.battery_power || 0) : 0,
-      nominalWp: (state.settings.solar_kwp || 0.45) * 1000,
-      online: state.online
-    });
+
+    if (!state.online) {
+      clearLiveReadings();
+    } else if (!wasOnline && state.latest) {
+      renderTelemetry(state.latest, false);
+    }
+    updateRelativeTime();
   }
 
   function updateRelativeTime() {
+    if (!state.online && !state.lastPacketAt) {
+      setText('last-update-text', 'Sem comunicação');
+      return;
+    }
     if (!state.lastPacketAt) {
       setText('last-update-text', 'Sem dados');
       return;
@@ -1034,13 +1136,8 @@ document.addEventListener('DOMContentLoaded', () => {
     document.fonts.ready.then(syncAllGliders).catch(() => {});
   }
 
-  // Hidrata estado local imediatamente enquanto a rede conecta (útil sob sinal fraco)
-  try {
-    const cachedSettings = localStorage.getItem('solar_last_settings');
-    if (cachedSettings) applySettings(JSON.parse(cachedSettings));
-    const cachedTelemetry = localStorage.getItem('solar_last_telemetry');
-    if (cachedTelemetry && !state.latest) renderTelemetry(JSON.parse(cachedTelemetry), false);
-  } catch {}
+  // Inicializa em estado Offline limpo (sem exibir valores antigos/falsos como atuais)
+  clearLiveReadings();
 
   fetch('/api/telemetry/latest')
     .then((r) => r.json())
@@ -1049,8 +1146,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (r.vehicle_name && !state.settings.vehicle_name) {
         applySettings({ vehicle_name: r.vehicle_name });
       }
-      if (r.status) setOnline(r.status.online);
-      if (r.data && !state.latest) renderTelemetry(r.data, false);
+      const isOnline = r.status ? Boolean(r.status.online) : false;
+      setOnline(isOnline);
+      if (isOnline && r.data && !state.latest) {
+        renderTelemetry(r.data, false);
+      }
     })
     .catch(() => {});
 
