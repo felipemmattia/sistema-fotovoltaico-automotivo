@@ -17,10 +17,10 @@ if (!fs.existsSync(DB_DIR)) {
 
 if (!fs.existsSync(SETTINGS_FILE)) {
   const defaultSettings = {
-    vehicle_name: 'Volkswagen Fox',
+    vehicle_name: 'Volkswagen Amarok - Prata',
     system_voltage: 12,
-    battery_capacity_ah: 200,
-    solar_kwp: 0.45,
+    battery_capacity_ah: 80,
+    solar_kwp: 0.2,
     updated_at: new Date().toISOString()
   };
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(defaultSettings, null, 2));

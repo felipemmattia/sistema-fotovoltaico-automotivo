@@ -94,10 +94,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const state = {
     settings: {
-      vehicle_name: '',
-      battery_capacity_ah: 200,
+      vehicle_name: 'Volkswagen Amarok - Prata',
+      battery_capacity_ah: 80,
       system_voltage: 12,
-      solar_kwp: 0.45
+      solar_kwp: 0.2
     },
     latest: null,
     lastPacketAt: null,
@@ -705,6 +705,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ws.onopen = () => {
       state.wsConnected = true;
       setText('ws-state', 'WebSocket ativo');
+      syncPendingSettings();
     };
 
     ws.onmessage = (event) => {
@@ -1053,6 +1054,42 @@ document.addEventListener('DOMContentLoaded', () => {
     renderDerived(false);
   }
 
+  async function syncPendingSettings() {
+    let pendingRaw = null;
+    try {
+      pendingRaw = localStorage.getItem('solar_pending_settings');
+    } catch {}
+    if (!pendingRaw) return;
+
+    try {
+      const body = JSON.parse(pendingRaw);
+      const res = await fetch(apiUrl('/api/settings'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success) {
+          localStorage.removeItem('solar_pending_settings');
+          applySettings(data.data);
+        }
+      }
+    } catch {}
+  }
+
+  // Hidrata as configurações salvas localmente (nome do veículo, Ah, V, Wp) mesmo quando offline
+  try {
+    const savedSettings = localStorage.getItem('solar_last_settings');
+    if (savedSettings) {
+      applySettings(JSON.parse(savedSettings));
+    } else {
+      applySettings(state.settings);
+    }
+  } catch {
+    applySettings(state.settings);
+  }
+
   const dialog = $('vehicle-modal');
 
   function closeModalAnimated() {
@@ -1101,23 +1138,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const saveBtn = $('btn-save-vehicle');
     saveBtn.disabled = true;
+
+    // Aplica imediatamente na interface e propaga na malha P2P mesmo se o servidor estiver offline
+    applySettings(body);
+    if (meshRepeater) meshRepeater.relayPacket('SETTINGS', state.settings);
+
     try {
+      await resolveBackendOrigin();
       const res = await fetch(apiUrl('/api/settings'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
       const data = await res.json();
-      if (data.success) {
+      if (data && data.success) {
+        try {
+          localStorage.removeItem('solar_pending_settings');
+        } catch {}
         applySettings(data.data);
-        closeModalAnimated();
-      } else {
-        alert('Não foi possível salvar: ' + (data.error || 'erro desconhecido'));
       }
-    } catch (err) {
-      alert('Erro ao salvar configurações: ' + err.message);
+    } catch {
+      // Se o servidor estiver offline no momento, guarda em fila local para sincronizar assim que reconectar
+      try {
+        localStorage.setItem('solar_pending_settings', JSON.stringify(body));
+      } catch {}
     } finally {
       saveBtn.disabled = false;
+      closeModalAnimated();
     }
   });
 
@@ -1209,7 +1256,8 @@ document.addEventListener('DOMContentLoaded', () => {
       .then((r) => r.json())
       .then((r) => {
         if (!r.success) return;
-        if (r.vehicle_name && !state.settings.vehicle_name) {
+        const hasPending = Boolean(localStorage.getItem('solar_pending_settings'));
+        if (r.vehicle_name && !hasPending) {
           applySettings({ vehicle_name: r.vehicle_name });
         }
         const isOnline = r.status ? Boolean(r.status.online) : false;
@@ -1220,10 +1268,14 @@ document.addEventListener('DOMContentLoaded', () => {
       })
       .catch(() => {});
 
-    fetch(apiUrl('/api/settings'))
-      .then((r) => r.json())
-      .then((r) => r.success && applySettings(r.data))
-      .catch(() => {});
+    if (localStorage.getItem('solar_pending_settings')) {
+      syncPendingSettings();
+    } else {
+      fetch(apiUrl('/api/settings'))
+        .then((r) => r.json())
+        .then((r) => r.success && applySettings(r.data))
+        .catch(() => {});
+    }
 
     connectWebSocket();
     fetchHistory('hours');

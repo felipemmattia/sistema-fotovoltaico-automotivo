@@ -215,7 +215,7 @@ app.get('/api/settings', (req, res) => {
   return res.json({ success: true, data: db.getSettings() });
 });
 
-app.put('/api/settings', (req, res) => {
+function handleUpdateSettings(req, res) {
   try {
     const updated = db.updateSettings(req.body);
 
@@ -228,7 +228,10 @@ app.put('/api/settings', (req, res) => {
   } catch (err) {
     return res.status(400).json({ success: false, error: err.message });
   }
-});
+}
+
+app.put('/api/settings', handleUpdateSettings);
+app.post('/api/settings', handleUpdateSettings);
 
 /**
  * Endpoint de verificação de integridade do serviço (utilizado também por monitores 24/7).
