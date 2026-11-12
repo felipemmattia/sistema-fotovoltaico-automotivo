@@ -26,13 +26,15 @@ if (-not (Test-Path $binDir)) {
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 }
 
-# 1. Evita multiplas instancias simultaneas do supervisor 24/7
-$currentPid = $PID
-Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object {
-    $_.ProcessId -ne $currentPid -and $_.CommandLine -match "start_public_tunnel\.ps1"
-} | ForEach-Object {
-    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+# 1. Registra PID atual do supervisor
+$pidFile = Join-Path $binDir "supervisor.pid"
+if (Test-Path $pidFile) {
+    $oldPid = Get-Content $pidFile -ErrorAction SilentlyContinue
+    if ($oldPid -and ($oldPid -ne "$PID")) {
+        Stop-Process -Id ([int]$oldPid) -Force -ErrorAction SilentlyContinue
+    }
 }
+Set-Content -Path $pidFile -Value "$PID" -Force
 
 # 2. Configura atalho de inicializacao silenciosa no Windows (sem abrir janela CMD ao ligar o PC)
 if ($RegisterStartup) {
@@ -72,7 +74,9 @@ function Ensure-BackendRunning {
 
     $env:PORT = "$LocalPort"
     $env:NODE_ENV = "production"
-    Start-Process -FilePath "node" -ArgumentList "server.js" -WorkingDirectory $backendDir -WindowStyle Hidden | Out-Null
+    $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
+    if (-not $nodeExe) { $nodeExe = "node" }
+    Start-Process -FilePath $nodeExe -ArgumentList "server.js" -WorkingDirectory $backendDir -WindowStyle Hidden | Out-Null
 
     # Aguarda ate 8 segundos para o servidor responder na porta 3000
     for ($i = 0; $i -lt 16; $i++) {
