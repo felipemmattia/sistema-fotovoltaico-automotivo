@@ -19,12 +19,9 @@
 
 /* ---------- Tema claro (Graphite) ---------- */
 [data-theme='light'] {
-  --bg: #f3f4f7;
+  --bg: #f6f6f7;
   --surface: #ffffff;
   --surface-hi: #ffffff;
-  --card-glass-hi: rgba(255, 255, 255, 0.88);
-  --card-glass-lo: rgba(252, 252, 254, 0.82);
-  --topbar-glass: rgba(255, 255, 255, 0.86);
   --surface-hover: #fcfcfd;
   --raised: #f1f1f3;
   --raised-hi: #f7f7f8;
@@ -59,12 +56,9 @@
 
 /* ---------- Tema escuro (Graphite) ---------- */
 [data-theme='dark'] {
-  --bg: #0f1013;
+  --bg: #121214;
   --surface: #18181b;
   --surface-hi: #1e1e22;
-  --card-glass-hi: rgba(26, 27, 32, 0.84);
-  --card-glass-lo: rgba(20, 21, 25, 0.80);
-  --topbar-glass: rgba(18, 19, 23, 0.84);
   --surface-hover: #222226;
   --raised: #222226;
   --raised-hi: #29292e;
@@ -116,8 +110,6 @@ html {
 
 body {
   margin: 0;
-  position: relative;
-  min-height: 100vh;
   background-color: var(--bg);
   color: var(--text-1);
   font-family: var(--font-sans);
@@ -126,17 +118,6 @@ body {
   font-weight: 400;
   -webkit-font-smoothing: antialiased;
   transition: background-color 180ms var(--ease), color 180ms var(--ease);
-}
-
-/* Background Animado "Speckled Graphite" (passa por trás dos cards) */
-.graphite-bg {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  z-index: 0;
-  pointer-events: none;
-  display: block;
 }
 
 h1, h2, h3, p, dl, dd {
@@ -231,9 +212,7 @@ button {
   position: sticky;
   top: 0;
   z-index: 10;
-  background-color: var(--topbar-glass);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background-color: var(--surface);
   border-bottom: 1px solid var(--hairline);
 }
 
@@ -645,8 +624,6 @@ button {
    Estrutura da página e cabeçalho
    ========================================================================== */
 .page {
-  position: relative;
-  z-index: 1;
   max-width: var(--page-max);
   margin: 0 auto;
   padding: 32px;
@@ -714,10 +691,8 @@ button {
   overflow: hidden;
   padding: 20px 24px;
   min-height: 156px;
-  background: linear-gradient(180deg, var(--card-glass-hi) 0%, var(--card-glass-lo) 100%);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid var(--hairline-strong);
+  background: linear-gradient(180deg, var(--surface-hi) 0%, var(--surface) 100%);
+  border: 1px solid var(--hairline);
   border-radius: var(--r-panel);
   box-shadow: var(--top-highlight), var(--shadow-card);
   display: flex;
@@ -956,10 +931,8 @@ button {
 }
 
 .panel {
-  background: linear-gradient(180deg, var(--card-glass-hi) 0%, var(--card-glass-lo) 100%);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid var(--hairline-strong);
+  background: linear-gradient(180deg, var(--surface-hi) 0%, var(--surface) 100%);
+  border: 1px solid var(--hairline);
   border-radius: var(--r-panel);
   padding: 24px;
   box-shadow: var(--top-highlight), var(--shadow-card);
