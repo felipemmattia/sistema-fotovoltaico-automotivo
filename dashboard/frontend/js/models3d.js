@@ -1,22 +1,298 @@
 /**
- * Telemetria FV — Renderizador 3D PBR em WebGL.
+ * Telemetria FV — Renderizador 3D PBR (Metodologia vgpu) + Background "Speckled Graphite".
  *
- * Renderiza três modelos 3D com iluminação física (GGX + Fresnel Schlick)
- * que reagem em tempo real aos dados de telemetria:
- *   1. #canvas-pv   — Módulo fotovoltaico inclinado sobre pedestal metálico e Sol 3D
- *                     cujo brilho aumenta proporcionalmente à potência solar gerada.
- *   2. #canvas-soc  — Bateria automotiva 3D com símbolo de raio frontal que se
- *                     preenche conforme o estado de carga (SOC %).
- *   3. #canvas-temp — Termômetro 3D com escala graduada em °C cuja coluna e cor
- *                     variam conforme a temperatura medida pelo sensor NTC.
+ * 1. SpeckledGraphiteBackground (#graphite-bg-canvas):
+ *    Superfície animada de grafite mineral salpicado com micro-fibras direcionais,
+ *    grão de carbono de alta frequência, micropartículas metálicas especulares e
+ *    feixe de iluminação diagonal que desliza continuamente por trás dos cards.
+ *
+ * 2. StudioModels3D (#canvas-pv, #canvas-soc, #canvas-temp):
+ *    Modelagem SDF com montagem estrutural contínua (shape-and-assembly),
+ *    supersampling 2x nas bordas (RGSS AA) e sombreamento físico PBR
+ *    (Smith-GGX Correlated + Fresnel Schlick + Clearcoat + IBL):
+ *      - #canvas-pv:   Placa solar 3D sobre pedestal e Sol 3D virados na diagonal
+ *                      olhando para a esquerda (alinhados à bateria e ao termômetro);
+ *                      brilho do sol reage à potência solar gerada.
+ *      - #canvas-soc:  Bateria automotiva 3D com alça, polos (+ / -) e raio 3D
+ *                      frontal que se preenche conforme o estado de carga (SOC %).
+ *      - #canvas-temp: Termômetro 3D em cápsula com escala °C cuja coluna líquida
+ *                      e cor reagem à temperatura real do sensor NTC.
  */
+
+class SpeckledGraphiteBackground {
+  constructor(canvasId = 'graphite-bg-canvas') {
+    this.canvas = document.getElementById(canvasId);
+    if (!this.canvas) return;
+
+    this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    this.dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    this.smoothDark = this.dark ? 1.0 : 0.0;
+    this.mouseX = 0.0;
+    this.mouseY = 0.0;
+    this.targetMouseX = 0.0;
+    this.targetMouseY = 0.0;
+
+    this.gl =
+      this.canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false }) ||
+      this.canvas.getContext('webgl', { alpha: false, antialias: false, depth: false });
+
+    if (!this.gl || !this.initShader()) return;
+
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
+    window.addEventListener(
+      'pointermove',
+      (e) => {
+        this.targetMouseX = (e.clientX / Math.max(1, window.innerWidth)) * 2 - 1;
+        this.targetMouseY = -((e.clientY / Math.max(1, window.innerHeight)) * 2 - 1);
+      },
+      { passive: true }
+    );
+  }
+
+  setTheme(isDark) {
+    this.dark = Boolean(isDark);
+  }
+
+  resize() {
+    if (!this.canvas || !this.gl) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+    const w = Math.max(1, Math.round(window.innerWidth * dpr));
+    const h = Math.max(1, Math.round(window.innerHeight * dpr));
+    if (this.canvas.width !== w || this.canvas.height !== h) {
+      this.canvas.width = w;
+      this.canvas.height = h;
+      this.gl.viewport(0, 0, w, h);
+    }
+  }
+
+  initShader() {
+    const gl = this.gl;
+    const vsSource = `
+      attribute vec2 a_pos;
+      varying vec2 v_uv;
+      void main() {
+        v_uv = a_pos * 0.5 + 0.5;
+        gl_Position = vec4(a_pos, 0.0, 1.0);
+      }
+    `;
+
+    const fsSource = `
+      precision highp float;
+      varying vec2 v_uv;
+
+      uniform vec2 u_res;
+      uniform float u_time;
+      uniform float u_dark;
+      uniform vec2 u_mouse;
+
+      float hash12(vec2 p) {
+        vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+        p3 += dot(p3, p3.yzx + 33.33);
+        return fract((p3.x + p3.y) * p3.z);
+      }
+
+      vec2 hash22(vec2 p) {
+        vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+        p3 += dot(p3, p3.yzx + 33.33);
+        return fract((p3.xx + p3.yz) * p3.zy);
+      }
+
+      float valueNoise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(
+          mix(hash12(i + vec2(0.0, 0.0)), hash12(i + vec2(1.0, 0.0)), u.x),
+          mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x),
+          u.y
+        );
+      }
+
+      // Camada de micro-riscos e fibras minerais de grafite (referência Kiloway)
+      float graphiteMicroFibers(vec2 p, float scale, float density, float lightAngle) {
+        vec2 gp = p * scale;
+        vec2 cell = floor(gp);
+        vec2 local = fract(gp) - 0.5;
+
+        vec2 rnd = hash22(cell);
+        if (rnd.x > density) return 0.0;
+
+        float ang = (rnd.y - 0.5) * 1.45 - 0.42;
+        float c = cos(ang), s = sin(ang);
+        vec2 q = mat2(c, -s, s, c) * (local - (rnd - 0.5) * 0.28);
+
+        float halfLen = mix(0.16, 0.40, rnd.x);
+        float dSeg = length(vec2(max(abs(q.x) - halfLen, 0.0), q.y));
+        float fiber = 1.0 - smoothstep(0.015, 0.075, dSeg);
+
+        float aniso = 0.55 + 0.45 * cos((ang - lightAngle) * 2.0);
+        return fiber * aniso * mix(0.45, 1.0, rnd.y);
+      }
+
+      // Camada de micropartículas metálicas de grafite (specks brilhantes e foscos)
+      float graphiteSpecks(vec2 p, float scale, float threshold, float shimmerPhase) {
+        vec2 gp = p * scale;
+        vec2 cell = floor(gp);
+        vec2 local = fract(gp) - 0.5;
+        vec2 rnd = hash22(cell);
+
+        if (rnd.x < threshold) return 0.0;
+
+        vec2 offset = (rnd - 0.5) * 0.52;
+        float dist = length(local - offset);
+        float radius = mix(0.06, 0.18, fract(rnd.y * 7.13));
+        float dotMask = 1.0 - smoothstep(radius * 0.25, radius, dist);
+
+        float glint = 0.62 + 0.38 * sin(shimmerPhase + rnd.y * 6.28318);
+        return dotMask * glint;
+      }
+
+      void main() {
+        vec2 uv = gl_FragCoord.xy / u_res;
+        float aspect = u_res.x / max(u_res.y, 1.0);
+        vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
+
+        // Movimento contínuo do plano de grafite passando diagonalmente por trás dos cards
+        vec2 drift = vec2(-0.022, -0.013) * u_time + u_mouse * 0.012;
+        vec2 pSurf = p + drift;
+
+        // 1. Feixe de iluminação diagonal de estúdio
+        float sweepWave = sin(u_time * 0.38) * 0.08;
+        vec2 lightCenter = vec2(-0.18 + sweepWave + u_mouse.x * 0.08, 0.20 + u_mouse.y * 0.06);
+        float diagCoord = dot(p - lightCenter, normalize(vec2(0.76, -0.65)));
+        float diagonalBeam = exp(-diagCoord * diagCoord * 2.35);
+        float radialGlow = exp(-dot(p - lightCenter, p - lightCenter) * 1.45);
+        float studioSheen = clamp(diagonalBeam * 0.62 + radialGlow * 0.48, 0.0, 1.0);
+
+        // 2. Macro-relevo mineral suave em 3 oitavas
+        float macro1 = valueNoise(pSurf * 3.8);
+        float macro2 = valueNoise(pSurf * 9.5 + vec2(4.2, -1.7));
+        float macro3 = valueNoise(pSurf * 24.0 - drift * 0.5);
+        float mineralBase = macro1 * 0.52 + macro2 * 0.31 + macro3 * 0.17;
+
+        // 3. Grão de grafite de alta frequência
+        float fineGrain = hash12(floor(gl_FragCoord.xy + drift * 420.0));
+        float midGrain = valueNoise(pSurf * 165.0);
+
+        // 4. Micro-fibras e micro-riscos anisotrópicos de grafite
+        float lightAng = -0.55 + sweepWave * 0.5;
+        float fibersA = graphiteMicroFibers(pSurf, 68.0, 0.42, lightAng);
+        float fibersB = graphiteMicroFibers(pSurf + vec2(1.37, 2.91), 118.0, 0.36, lightAng + 0.3);
+        float fibersC = graphiteMicroFibers(pSurf * 1.15 - vec2(3.11, 0.84), 185.0, 0.28, lightAng - 0.25);
+        float totalFibers = clamp(fibersA * 0.55 + fibersB * 0.45 + fibersC * 0.35, 0.0, 1.0);
+
+        // 5. Micropartículas metálicas (Speckled Graphite flecks)
+        float specksCoarse = graphiteSpecks(pSurf, 74.0, 0.68, u_time * 1.15 + diagCoord * 5.0);
+        float specksFine = graphiteSpecks(pSurf + vec2(5.1, 2.3), 148.0, 0.56, u_time * 1.45 - diagCoord * 6.0);
+        float specksMicro = graphiteSpecks(pSurf - vec2(2.7, 7.4), 260.0, 0.62, u_time * 1.8);
+        float totalSpecks = clamp(specksCoarse * 0.65 + specksFine * 0.55 + specksMicro * 0.42, 0.0, 1.0);
+
+        float lightBoost = 0.38 + 0.92 * studioSheen;
+
+        // Composição Dark Mode (Speckled Graphite idêntico à referência Kiloway)
+        vec3 darkShadow = vec3(0.047, 0.051, 0.062);
+        vec3 darkMid = vec3(0.115, 0.122, 0.142);
+        vec3 darkLit = vec3(0.205, 0.218, 0.248);
+
+        vec3 darkCol = mix(darkShadow, darkMid, smoothstep(0.08, 0.65, studioSheen));
+        darkCol = mix(darkCol, darkLit, smoothstep(0.45, 0.98, studioSheen * (0.7 + 0.3 * mineralBase)));
+        darkCol += (mineralBase - 0.5) * 0.032;
+        darkCol += (midGrain - 0.5) * 0.028 + (fineGrain - 0.5) * 0.022;
+        darkCol += vec3(0.28, 0.30, 0.34) * totalFibers * lightBoost * 0.52;
+        darkCol += vec3(0.62, 0.65, 0.72) * totalSpecks * lightBoost * 0.64;
+
+        float vig = smoothstep(1.12, 0.24, length(p * vec2(0.88, 1.06)));
+        darkCol *= mix(0.54, 1.0, vig);
+
+        // Composição Light Mode (Grafite Mineral Claro Arquitetônico)
+        vec3 lightShadow = vec3(0.885, 0.892, 0.910);
+        vec3 lightLit = vec3(0.960, 0.964, 0.975);
+        vec3 lightCol = mix(lightShadow, lightLit, studioSheen * 0.75 + mineralBase * 0.25);
+        lightCol += (midGrain - 0.5) * 0.022 + (fineGrain - 0.5) * 0.016;
+        lightCol -= vec3(0.16, 0.17, 0.20) * totalFibers * 0.26;
+        lightCol += vec3(0.98, 0.99, 1.0) * totalSpecks * studioSheen * 0.38;
+        lightCol -= vec3(0.22, 0.24, 0.28) * totalSpecks * (1.0 - studioSheen) * 0.22;
+
+        vec3 finalCol = mix(lightCol, darkCol, u_dark);
+        gl_FragColor = vec4(clamp(finalCol, 0.0, 1.0), 1.0);
+      }
+    `;
+
+    const vs = this.compile(gl, gl.VERTEX_SHADER, vsSource);
+    const fs = this.compile(gl, gl.FRAGMENT_SHADER, fsSource);
+    if (!vs || !fs) return false;
+
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return false;
+
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+      gl.STATIC_DRAW
+    );
+
+    const aPos = gl.getAttribLocation(prog, 'a_pos');
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+    this.program = prog;
+    this.buffer = buf;
+    this.aPos = aPos;
+    this.uniforms = {
+      res: gl.getUniformLocation(prog, 'u_res'),
+      time: gl.getUniformLocation(prog, 'u_time'),
+      dark: gl.getUniformLocation(prog, 'u_dark'),
+      mouse: gl.getUniformLocation(prog, 'u_mouse')
+    };
+    return true;
+  }
+
+  compile(gl, type, source) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, source);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      console.warn('[SpeckledGraphite] Erro GLSL:', gl.getShaderInfoLog(sh));
+      gl.deleteShader(sh);
+      return null;
+    }
+    return sh;
+  }
+
+  render(timeSec) {
+    if (!this.gl || !this.program) return;
+    const gl = this.gl;
+
+    const targetDark = this.dark ? 1.0 : 0.0;
+    this.smoothDark += (targetDark - this.smoothDark) * 0.14;
+    this.mouseX += (this.targetMouseX - this.mouseX) * 0.06;
+    this.mouseY += (this.targetMouseY - this.mouseY) * 0.06;
+
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    gl.vertexAttribPointer(this.aPos, 2, gl.FLOAT, false, 0, 0);
+
+    gl.uniform2f(this.uniforms.res, this.canvas.width, this.canvas.height);
+    gl.uniform1f(this.uniforms.time, this.reducedMotion ? 0.0 : timeSec);
+    gl.uniform1f(this.uniforms.dark, this.smoothDark);
+    gl.uniform2f(this.uniforms.mouse, this.mouseX, this.mouseY);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+}
 
 class StudioModels3D {
   constructor() {
     this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.scenes = [];
     this.rafId = 0;
-    this.activeUntil = performance.now() + 2600;
+    this.bg = new SpeckledGraphiteBackground('graphite-bg-canvas');
 
     this.state = {
       pvPower: 0,
@@ -48,8 +324,6 @@ class StudioModels3D {
       if (scene) this.scenes.push(scene);
     });
 
-    if (!this.scenes.length) return;
-
     if ('IntersectionObserver' in window) {
       this.io = new IntersectionObserver(
         (entries) => {
@@ -57,7 +331,6 @@ class StudioModels3D {
             const sc = this.scenes.find((s) => s.canvas === entry.target);
             if (sc) sc.visible = entry.isIntersecting;
           });
-          this.wake(600);
         },
         { threshold: 0.05 }
       );
@@ -66,15 +339,18 @@ class StudioModels3D {
 
     window.addEventListener('resize', () => {
       this.scenes.forEach((s) => this.resizeScene(s));
-      this.wake(400);
     });
 
-    this.wake(2800);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && !this.rafId) {
+        this.rafId = requestAnimationFrame((t) => this.loop(t));
+      }
+    });
+
+    this.wake();
   }
 
-  wake(durationMs = 1200) {
-    const target = performance.now() + durationMs;
-    if (target > this.activeUntil) this.activeUntil = target;
+  wake() {
     if (!this.rafId) {
       this.rafId = requestAnimationFrame((t) => this.loop(t));
     }
@@ -82,7 +358,8 @@ class StudioModels3D {
 
   setTheme(isDark) {
     this.state.dark = Boolean(isDark);
-    this.wake(1000);
+    if (this.bg) this.bg.setTheme(this.state.dark);
+    this.wake();
   }
 
   updateTelemetry(data) {
@@ -108,7 +385,7 @@ class StudioModels3D {
     if (typeof data.online === 'boolean') {
       this.state.online = data.online;
     }
-    this.wake(1400);
+    this.wake();
   }
 
   createScene(canvas, card, kind) {
@@ -128,28 +405,25 @@ class StudioModels3D {
       mouseY: 0,
       targetMouseX: 0,
       targetMouseY: 0,
-      smoothVal: kind === 0 ? 0.45 : kind === 1 ? 0.59 : 0.55,
-      smoothAux: 26.5,
+      smoothVal: 0.05,
+      smoothAux: -10,
       smoothDark: this.state.dark ? 1 : 0
     };
 
     if (card) {
       card.addEventListener('pointerenter', () => {
         scene.hovered = true;
-        this.wake(2000);
       });
       card.addEventListener('pointermove', (e) => {
         const r = card.getBoundingClientRect();
         scene.targetMouseX = ((e.clientX - r.left) / r.width) * 2 - 1;
         scene.targetMouseY = -(((e.clientY - r.top) / r.height) * 2 - 1);
         scene.hovered = true;
-        this.wake(800);
       });
       card.addEventListener('pointerleave', () => {
         scene.hovered = false;
         scene.targetMouseX = 0;
         scene.targetMouseY = 0;
-        this.wake(1200);
       });
     }
 
@@ -212,6 +486,11 @@ class StudioModels3D {
         return mat2(c, -s, s, c);
       }
 
+      float smin(float a, float b, float k) {
+        float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+        return mix(b, a, h) - k * h * (1.0 - h);
+      }
+
       float sdBox(vec3 p, vec3 b) {
         vec3 q = abs(p) - b;
         return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
@@ -220,11 +499,6 @@ class StudioModels3D {
       float sdRoundBox(vec3 p, vec3 b, float r) {
         vec3 q = abs(p) - b;
         return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
-      }
-
-      float sdBox2D(vec2 p, vec2 b) {
-        vec2 d = abs(p) - b;
-        return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
       }
 
       float sdRoundBox2D(vec2 p, vec2 b, float r) {
@@ -248,7 +522,6 @@ class StudioModels3D {
         return length(p) - r;
       }
 
-      // Aresta de polígono 2D (distância exata + regra de cruzamento par-ímpar)
       void polyEdge(vec2 p, vec2 a, vec2 b, inout float d, inout float s) {
         vec2 e = b - a;
         vec2 w = p - a;
@@ -258,15 +531,14 @@ class StudioModels3D {
         if (all(cond) || all(not(cond))) s = -s;
       }
 
-      // Polígono 2D exato de 7 vértices do raio da bateria (sem costuras internas)
       float sdLightning2D(vec2 p) {
-        vec2 v0 = vec2(-0.01,  0.23); // Topo esquerdo da barra superior
-        vec2 v1 = vec2( 0.15,  0.17); // Topo direito da barra superior
-        vec2 v2 = vec2( 0.02,  0.01); // Cintura interna direita
-        vec2 v3 = vec2( 0.16, -0.03); // Ponta externa direita
-        vec2 v4 = vec2(-0.07, -0.27); // Ponta inferior aguda
-        vec2 v5 = vec2(-0.01, -0.04); // Cintura interna esquerda
-        vec2 v6 = vec2(-0.15,  0.00); // Ponta externa esquerda
+        vec2 v0 = vec2(-0.01,  0.23);
+        vec2 v1 = vec2( 0.15,  0.17);
+        vec2 v2 = vec2( 0.02,  0.01);
+        vec2 v3 = vec2( 0.16, -0.03);
+        vec2 v4 = vec2(-0.07, -0.27);
+        vec2 v5 = vec2(-0.01, -0.04);
+        vec2 v6 = vec2(-0.15,  0.00);
 
         float d = dot(p - v0, p - v0);
         float s = 1.0;
@@ -281,59 +553,61 @@ class StudioModels3D {
       }
 
       // ======================================================================
-      // MODELO 0: Placa Solar 3D sobre Pedestal + Sol 3D com 6 raios capsulares
+      // MODELO 0: Placa Solar 3D + Sol 3D (Virados na diagonal olhando para a esquerda)
       // ======================================================================
-      vec2 mapSolarScene(vec3 pWorld) {
-        float breath = sin(u_time * 1.5) * 0.012;
-        vec3 p = pWorld;
+      vec3 toSolarLocal(vec3 p) {
+        float breath = sin(u_time * 1.5) * 0.010;
         p.y -= breath;
+        p *= 1.12;
+        // Rotação 3/4 diagonal olhando para a esquerda (alinhada à bateria e ao termômetro)
+        p.xz *= rot(-0.44 + u_mouse.x * 0.22);
+        p.yz *= rot(-0.14 + u_mouse.y * 0.12);
+        return p;
+      }
 
-        // Rotação 3/4 idêntica à imagem de referência 1 (mostrando lateral direita da placa e base)
-        p.xz *= rot(0.22 - u_mouse.x * 0.22);
-        p.yz *= rot(-0.04 + u_mouse.y * 0.12);
+      vec2 mapSolarScene(vec3 pWorld) {
+        vec3 p = toSolarLocal(pWorld);
 
-        // 1. Sol 3D atrás à esquerda (posicionado em z = -0.44 para não interceptar a placa inclinada)
-        vec3 sunPos = p - vec3(-0.25, 0.21, -0.44);
-        float dSun = length(sunPos) - 0.31;
+        // 1. Sol 3D atrás à esquerda no mesmo plano diagonal + 6 raios capsulares
+        vec3 sunPos = p - vec3(-0.22, 0.23, -0.38);
+        float dSun = length(sunPos) - 0.30;
 
         for (int i = 0; i < 6; i++) {
-          float ang = 0.12 + float(i) * 0.70;
+          float ang = 0.14 + float(i) * 0.70;
           vec3 dir = vec3(cos(ang), sin(ang), 0.0);
-          float dRay = sdCapsule(sunPos, dir * 0.40, dir * 0.49, 0.046);
+          float dRay = sdCapsule(sunPos, dir * 0.385, dir * 0.478, 0.045);
           dSun = min(dSun, dRay);
         }
 
-        // 2. Base horizontal metálica do pedestal + 2 colunas de suporte
-        vec3 pBase = p - vec3(0.06, -0.43, 0.04);
-        float basePlate = sdRoundBox(pBase, vec3(0.50, 0.032, 0.30), 0.022);
-        float baseStep = sdRoundBox(pBase - vec3(0.0, 0.032, 0.0), vec3(0.44, 0.014, 0.24), 0.012);
-        float standStruts = sdRoundBox(
-          vec3(abs(pBase.x) - 0.28, pBase.y - 0.15, pBase.z - 0.02),
-          vec3(0.048, 0.14, 0.065),
-          0.014
-        );
-        float dStand = min(min(basePlate, baseStep), standStruts);
+        // 2. Base horizontal metálica chanfrada + 2 colunas + mancais de articulação (vgpu assembly)
+        vec3 pBase = p - vec3(0.0, -0.43, 0.03);
+        float basePlate = sdRoundBox(pBase, vec3(0.49, 0.032, 0.29), 0.022);
+        float baseStep = sdRoundBox(pBase - vec3(0.0, 0.033, 0.0), vec3(0.43, 0.015, 0.23), 0.012);
+        vec3 qStrut = vec3(abs(pBase.x) - 0.27, pBase.y - 0.155, pBase.z - 0.02);
+        float standStruts = sdRoundBox(qStrut, vec3(0.048, 0.14, 0.064), 0.014);
+        float pivotMount = sdCylinder((qStrut - vec3(0.0, 0.145, 0.02)).yxz, 0.054, 0.050) - 0.006;
+        float dStand = smin(min(basePlate, baseStep), min(standStruts, pivotMount), 0.010);
 
-        // 3. Placa solar inclinada em 3D (moldura branca/prata + 12 células azuis 4x3 contínuas)
-        vec3 pPanel = p - vec3(0.06, -0.05, 0.12);
-        pPanel.yz *= rot(-0.86);
+        // 3. Placa solar inclinada em 3D (moldura branca/prata + 12 células azuis 4x3 almofadadas)
+        vec3 pPanel = p - vec3(0.0, -0.05, 0.11);
+        pPanel.yz *= rot(-0.82);
 
-        float frameOuter = sdRoundBox(pPanel, vec3(0.52, 0.028, 0.36), 0.026);
-        float trayCut = sdRoundBox(pPanel - vec3(0.0, 0.032, 0.0), vec3(0.47, 0.020, 0.31), 0.012);
+        float frameOuter = sdRoundBox(pPanel, vec3(0.51, 0.032, 0.35), 0.028);
+        float trayCut = sdRoundBox(pPanel - vec3(0.0, 0.038, 0.0), vec3(0.462, 0.014, 0.302), 0.012);
         float dFrame = max(frameOuter, -trayCut);
 
-        // 12 células azuis 3D (4 colunas x 3 linhas) usando repetição finita exata (SDF 100% contínuo)
-        vec2 gridSpan = vec2(0.46, 0.30);
+        // 12 células azuis 3D arredondadas (4 colunas x 3 linhas)
+        vec2 gridSpan = vec2(0.455, 0.295);
         vec2 cellPitch = (gridSpan * 2.0) / vec2(4.0, 3.0);
         vec2 cellIdx = clamp(floor((pPanel.xz + gridSpan) / cellPitch), vec2(0.0), vec2(3.0, 2.0));
         vec2 cellCenterXZ = -gridSpan + (cellIdx + 0.5) * cellPitch;
-        vec3 pCell = pPanel - vec3(cellCenterXZ.x, 0.020, cellCenterXZ.y);
-        float dCells = sdRoundBox(pCell, vec3(0.092, 0.014, 0.078), 0.014);
+        vec3 pCell = pPanel - vec3(cellCenterXZ.x, 0.026, cellCenterXZ.y);
+        float dCells = sdRoundBox(pCell, vec3(0.092, 0.015, 0.078), 0.017);
 
-        vec2 res = vec2(dSun, 10.0);
-        if (dStand < res.x) res = vec2(dStand, 3.0);
-        if (dFrame < res.x) res = vec2(dFrame, 1.0);
-        if (dCells < res.x) res = vec2(dCells, 2.0);
+        vec2 res = vec2(dSun / 1.12, 10.0);
+        if (dStand / 1.12 < res.x) res = vec2(dStand / 1.12, 3.0);
+        if (dFrame / 1.12 < res.x) res = vec2(dFrame / 1.12, 1.0);
+        if (dCells / 1.12 < res.x) res = vec2(dCells / 1.12, 2.0);
         return res;
       }
 
@@ -341,9 +615,8 @@ class StudioModels3D {
       // MODELO 1: Bateria Automotiva 3D com Alça, Polos (+ / -) e Raio 3D
       // ======================================================================
       vec3 toBatteryLocal(vec3 p) {
-        float breath = sin(u_time * 1.5) * 0.012;
+        float breath = sin(u_time * 1.5 + 1.1) * 0.011;
         p.y -= breath - 0.03;
-        // Rotação idêntica à imagem de referência 2 (face frontal à esquerda, lateral à direita)
         p.xz *= rot(-0.46 + u_mouse.x * 0.24);
         p.yz *= rot(-0.34 + u_mouse.y * 0.14);
         return p;
@@ -352,10 +625,10 @@ class StudioModels3D {
       vec2 mapBatteryScene(vec3 pWorld) {
         vec3 p = toBatteryLocal(pWorld);
 
-        // Corpo principal escuro da bateria
+        // Corpo principal escuro contínuo e liso da bateria
         float mainBox = sdRoundBox(p - vec3(0.0, -0.06, 0.0), vec3(0.45, 0.31, 0.31), 0.032);
 
-        // Saia inferior alargada com os 2 entalhes de fixação frontais (idêntico à imagem 2)
+        // Saia inferior alargada com os 2 entalhes frontais de fixação
         float bottomSkirt = sdRoundBox(p - vec3(0.0, -0.35, 0.0), vec3(0.48, 0.042, 0.34), 0.024);
         float notchCut = sdCylinder(
           vec3(abs(p.x) - 0.18, p.z - 0.355, p.y + 0.32).xzy,
@@ -364,11 +637,14 @@ class StudioModels3D {
         );
         bottomSkirt = max(bottomSkirt, -notchCut);
 
-        // Tampa superior saliente
+        // Tampa superior saliente + bloco central + soquetes da alça (vgpu assembly)
         float topLid = sdRoundBox(p - vec3(0.0, 0.26, 0.0), vec3(0.48, 0.044, 0.34), 0.026);
-
-        // Bloco central elevado na tampa
         float centerPad = sdRoundBox(p - vec3(0.0, 0.315, -0.01), vec3(0.22, 0.024, 0.22), 0.016);
+        float handleSockets = sdRoundBox(
+          vec3(abs(p.x) - 0.175, p.y - 0.332, p.z + 0.05),
+          vec3(0.034, 0.016, 0.032),
+          0.008
+        );
 
         // Símbolos + e - em relevo sobre o bloco central da tampa
         vec3 pPlus = p - vec3(-0.10, 0.346, 0.09);
@@ -379,32 +655,32 @@ class StudioModels3D {
         vec3 pMinus = p - vec3(0.10, 0.346, 0.09);
         float symMinus = sdBox(pMinus, vec3(0.045, 0.008, 0.012));
 
-        // Alça superior preta em arco (invertido U)
+        // Alça superior preta em arco
         vec3 pHandle = p - vec3(0.0, 0.43, -0.05);
         float handleOuter = sdRoundBox(pHandle, vec3(0.20, 0.10, 0.020), 0.018);
         float handleHole = sdRoundBox(pHandle - vec3(0.0, -0.03, 0.0), vec3(0.15, 0.085, 0.06), 0.012);
         float handleArch = max(handleOuter, -handleHole);
 
         float dCasing = min(min(mainBox, bottomSkirt), min(topLid, centerPad));
-        dCasing = min(dCasing, min(symPlus, symMinus));
+        dCasing = min(dCasing, min(handleSockets, min(symPlus, symMinus)));
 
         // Terminal positivo esquerdo (vermelho com colarinho largo na base)
         vec3 pPos = p - vec3(-0.34, 0.33, 0.12);
         float termPos = min(
-          sdCylinder(pPos, 0.018, 0.092),
-          sdCylinder(pPos - vec3(0.0, 0.068, 0.0), 0.068, 0.058)
+          sdCylinder(pPos, 0.019, 0.094),
+          sdCylinder(pPos - vec3(0.0, 0.070, 0.0), 0.068, 0.058)
         ) - 0.008;
 
         // Terminal negativo direito (azul-aço com colarinho largo na base)
         vec3 pNeg = p - vec3(0.34, 0.33, 0.12);
         float termNeg = min(
-          sdCylinder(pNeg, 0.018, 0.092),
-          sdCylinder(pNeg - vec3(0.0, 0.068, 0.0), 0.068, 0.058)
+          sdCylinder(pNeg, 0.019, 0.094),
+          sdCylinder(pNeg - vec3(0.0, 0.070, 0.0), 0.068, 0.058)
         ) - 0.008;
 
-        // Símbolo de raio 3D extrudado na face frontal da bateria
+        // Símbolo de raio 3D extrudado na face frontal
         float d2dBolt = sdLightning2D(p.xy - vec2(0.0, -0.05));
-        vec2 wBolt = vec2(d2dBolt, abs(p.z - 0.342) - 0.018);
+        vec2 wBolt = vec2(d2dBolt, abs(p.z - 0.343) - 0.019);
         float dBolt = min(max(wBolt.x, wBolt.y), 0.0) + length(max(wBolt, 0.0)) - 0.006;
 
         vec2 res = vec2(dCasing, 1.0);
@@ -419,9 +695,8 @@ class StudioModels3D {
       // MODELO 2: Termômetro 3D em Cápsula com Escala °C e Bulbo Reativo
       // ======================================================================
       vec3 toThermoLocal(vec3 p) {
-        float breath = sin(u_time * 1.5) * 0.012;
+        float breath = sin(u_time * 1.5 + 2.2) * 0.011;
         p.y -= breath;
-        // Inclinação idêntica à imagem de referência 3 (topo levemente à direita + lateral 3D prateada visível)
         p.xz *= rot(-0.25 + u_mouse.x * 0.24);
         p.yz *= rot(-0.10 + u_mouse.y * 0.14);
         p.xy *= rot(0.06);
@@ -431,38 +706,32 @@ class StudioModels3D {
       vec2 mapThermoScene(vec3 pWorld) {
         vec3 p = toThermoLocal(pWorld);
 
-        // Placa retangular arredondada com folga superior e lateral para o símbolo °C
         float d2Outer = sdRoundBox2D(p.xy, vec2(0.20, 0.43), 0.14);
         vec2 wOuter = vec2(d2Outer, abs(p.z) - 0.068);
         float outerBody = min(max(wOuter.x, wOuter.y), 0.0) + length(max(wOuter, 0.0)) - 0.018;
 
-        // Cavidade frontal que forma o aro azul-ardósia e o mostrador branco
         float d2Inner = sdRoundBox2D(p.xy, vec2(0.165, 0.395), 0.11);
         vec2 wInnerCut = vec2(d2Inner, abs(p.z - 0.078) - 0.036);
         float innerCut = min(max(wInnerCut.x, wInnerCut.y), 0.0) + length(max(wInnerCut, 0.0));
 
         float plaque = max(outerBody, -innerCut);
 
-        // Mostrador branco interno
         vec2 wFace = vec2(d2Inner, abs(p.z - 0.044) - 0.012);
         float whiteFace = min(max(wFace.x, wFace.y), 0.0) + length(max(wFace, 0.0));
 
-        // Berço azul-aço do tubo e do bulbo (canaleta central-esquerda em x = -0.058)
         vec3 pTube = p - vec3(-0.058, 0.0, 0.056);
         float cradleStem = sdCapsuleY(pTube, -0.32, 0.39, 0.092);
         float cradleBulb = length(pTube - vec3(0.0, -0.34, 0.0)) - 0.152;
         float dCradle = min(cradleStem, cradleBulb);
         dCradle = max(dCradle, abs(p.z - 0.056) - 0.034);
 
-        // Coluna líquida interna + bulbo esférico reativo (sobe conforme u_val)
         float fillY = mix(-0.18, 0.35, clamp(u_val, 0.04, 0.98));
         vec3 pLiq = p - vec3(-0.058, 0.0, 0.074);
-        float liqBulb = length(pLiq - vec3(0.0, -0.34, 0.0)) - 0.124;
-        float liqCol = sdCapsuleY(pLiq, -0.34, fillY, 0.060);
-        float dLiquid = min(liqBulb, liqCol);
+        float liqBulb = length(pLiq - vec3(0.0, -0.34, 0.0)) - 0.125;
+        float liqCol = sdCapsuleY(pLiq, -0.34, fillY, 0.061);
+        float dLiquid = smin(liqBulb, liqCol, 0.012);
 
-        // Tubo capilar superior de vidro azulado acima da coluna líquida
-        float glassUpper = sdCapsuleY(pLiq - vec3(0.0, 0.0, -0.008), fillY, 0.38, 0.056);
+        float glassUpper = sdCapsuleY(pLiq - vec3(0.0, 0.0, -0.008), fillY, 0.38, 0.057);
 
         vec2 res = vec2(plaque, 3.0);
         if (whiteFace < res.x) res = vec2(whiteFace, 7.0);
@@ -479,7 +748,7 @@ class StudioModels3D {
       }
 
       vec3 calcNormal(vec3 p) {
-        const float h = 0.0012;
+        const float h = 0.0010;
         const vec2 k = vec2(1.0, -1.0);
         return normalize(
           k.xyy * mapScene(p + k.xyy * h).x +
@@ -493,12 +762,12 @@ class StudioModels3D {
         float occ = 0.0;
         float sca = 1.0;
         for (int i = 0; i < 5; i++) {
-          float h = 0.02 + 0.08 * float(i) / 4.0;
+          float h = 0.018 + 0.080 * float(i) / 4.0;
           float d = mapScene(pos + h * nor).x;
           occ += (h - d) * sca;
           sca *= 0.72;
         }
-        return clamp(1.0 - 2.1 * occ, 0.0, 1.0);
+        return clamp(1.0 - 1.85 * occ, 0.0, 1.0);
       }
 
       float calcSoftShadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
@@ -520,26 +789,43 @@ class StudioModels3D {
         return a2 / (3.14159265 * d * d + 1e-5);
       }
 
+      float V_SmithGGXCorrelated(float NdotV, float NdotL, float roughness) {
+        float a2 = roughness * roughness;
+        a2 = a2 * a2;
+        float ggxV = NdotL * sqrt(NdotV * NdotV * (1.0 - a2) + a2);
+        float ggxL = NdotV * sqrt(NdotL * NdotL * (1.0 - a2) + a2);
+        return 0.5 / max(ggxV + ggxL, 1e-4);
+      }
+
       vec3 F_Schlick(float cosTheta, vec3 F0) {
         return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
       }
 
-      // Escala graduada preta + símbolo °C gravados no mostrador branco do termômetro
+      vec3 F_SchlickRoughness(float cosTheta, vec3 F0, float roughness) {
+        return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+      }
+
+      vec3 envStudioIBL(vec3 R, float roughness) {
+        float sky = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
+        vec3 dome = mix(vec3(0.20, 0.22, 0.26), vec3(0.86, 0.91, 0.98), pow(sky, 0.75));
+        float softboxKey = smoothstep(0.55, 0.92, dot(R, normalize(vec3(-0.45, 0.72, 0.52))));
+        float softboxRim = smoothstep(0.62, 0.95, dot(R, normalize(vec3(0.65, 0.45, -0.60))));
+        float blurAtten = 1.0 - roughness * 0.65;
+        return dome + (vec3(1.0, 0.98, 0.94) * softboxKey * 0.60 + vec3(0.76, 0.88, 1.0) * softboxRim * 0.40) * blurAtten;
+      }
+
       float thermoScaleMask(vec2 p) {
         float m = 0.0;
 
-        // Símbolo ° (anel no topo esquerdo da dupla °C, separado com nitidez da letra C)
         float degRing = abs(length(p - vec2(0.068, 0.432)) - 0.013) - 0.005;
         m = max(m, 1.0 - smoothstep(-0.002, 0.003, degRing));
 
-        // Letra C nítida e encorpada com abertura limpa para a direita
         vec2 pc = p - vec2(0.122, 0.378);
         float cRing = abs(length(pc) - 0.032) - 0.010;
         float cOpen = step(0.005, pc.x) * (1.0 - smoothstep(0.018, 0.024, abs(pc.y)));
         float cMask = (1.0 - smoothstep(-0.002, 0.003, cRing)) * (1.0 - cOpen);
         m = max(m, cMask);
 
-        // 13 traços horizontais de graduação abaixo do °C (y de -0.22 a +0.28)
         if (p.y > -0.24 && p.y < 0.30 && p.x > 0.052 && p.x < 0.20) {
           float idxF = (p.y - (-0.22)) / 0.04167;
           float idx = floor(idxF + 0.5);
@@ -556,56 +842,56 @@ class StudioModels3D {
         return clamp(m, 0.0, 1.0);
       }
 
-      void main() {
-        vec2 uv = (gl_FragCoord.xy - 0.5 * u_res) / min(u_res.x, u_res.y);
+      vec4 renderSample(vec2 fragCoord) {
+        vec2 uv = (fragCoord - 0.5 * u_res) / min(u_res.x, u_res.y);
         float canvasMask = smoothstep(0.49, 0.34, length(uv));
 
-        // Câmera de estúdio
-        vec3 ro = vec3(0.0, 0.04, 2.52);
+        // Lente teleobjetiva de estúdio (elimina distorção trapezoidal de perspectiva nas bordas)
+        vec3 ro = vec3(0.0, 0.05, 5.40);
         vec3 ta = vec3(0.0, -0.03, 0.0);
         vec3 ww = normalize(ta - ro);
         vec3 uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));
         vec3 vv = normalize(cross(uu, ww));
-        vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.72 * ww);
+        vec3 rd = normalize(uv.x * uu + uv.y * vv + 3.78 * ww);
 
-        vec3 keyDir = normalize(vec3(0.52 + u_mouse.x * 0.25, 0.72 + u_mouse.y * 0.20, 0.65));
-        vec3 fillDir = normalize(vec3(-0.65, 0.30, 0.58));
-        vec3 rimDir = normalize(vec3(0.10, 0.60, -0.80));
+        vec3 keyDir = normalize(vec3(0.48 + u_mouse.x * 0.25, 0.74 + u_mouse.y * 0.20, 0.68));
+        vec3 fillDir = normalize(vec3(-0.68, 0.34, 0.58));
+        vec3 rimDir = normalize(vec3(0.14, 0.62, -0.78));
 
-        float t = 0.0;
+        float t = 3.8;
         float mat = -1.0;
-        for (int i = 0; i < 70; i++) {
+        for (int i = 0; i < 72; i++) {
           vec3 pos = ro + rd * t;
           vec2 h = mapScene(pos);
-          if (h.x < 0.0012) {
+          if (h.x < 0.0010) {
             mat = h.y;
             break;
           }
           t += h.x;
-          if (t > 4.2) break;
+          if (t > 7.2) break;
         }
 
         vec3 col = vec3(0.0);
         float alpha = 0.0;
 
-        // Halo volumétrico reativo atrás do Sol 3D (u_kind == 0): cresce conforme a geração solar (u_val)
+        // Halo volumétrico reativo atrás do Sol 3D (posicionado na diagonal superior esquerda)
         if (u_kind == 0) {
-          vec2 sunScreen = vec2(-0.14, 0.12);
+          vec2 sunScreen = vec2(-0.07, 0.14);
           float dSun2D = length(uv - sunScreen);
-          float glowStrength = (0.12 + 0.58 * u_val) * canvasMask;
-          float sunHalo = exp(-dSun2D * mix(5.8, 3.4, u_val)) * glowStrength;
-          col = vec3(1.0, 0.80, 0.18);
-          alpha = clamp(sunHalo, 0.0, 0.85);
+          float glowStrength = (0.14 + 0.62 * u_val) * canvasMask;
+          float sunHalo = exp(-dSun2D * mix(5.6, 3.2, u_val)) * glowStrength;
+          col = vec3(1.0, 0.82, 0.20);
+          alpha = clamp(sunHalo, 0.0, 0.88);
         }
 
-        // Sombra de contato suave sob o modelo
+        // Sombra de contato penumbra sob o modelo
         float floorY = u_kind == 2 ? -0.68 : -0.52;
         if (rd.y < -0.001 && mat < 0.0) {
           float tf = (floorY - ro.y) / rd.y;
-          if (tf > 0.0 && tf < 3.6) {
+          if (tf > 0.0 && tf < 7.0) {
             vec3 pf = ro + rd * tf;
             float distCenter = length(pf.xz * vec2(0.95, 1.25));
-            float sh = 1.0 - calcSoftShadow(pf + vec3(0.0, 0.02, 0.0), normalize(vec3(0.15, 0.95, 0.2)), 0.02, 1.4, 7.5);
+            float sh = 1.0 - calcSoftShadow(pf + vec3(0.0, 0.02, 0.0), normalize(vec3(0.15, 0.95, 0.2)), 0.02, 1.4, 7.6);
             float radialFade = smoothstep(0.60, 0.10, distCenter);
             float shadowAlpha = sh * radialFade * canvasMask * mix(0.13, 0.34, u_dark);
             col = mix(col, vec3(0.02, 0.02, 0.03), shadowAlpha / max(alpha + shadowAlpha, 1e-4));
@@ -617,131 +903,128 @@ class StudioModels3D {
           vec3 pos = ro + rd * t;
           vec3 N = calcNormal(pos);
           vec3 V = -rd;
+          vec3 R = reflect(-V, N);
           float ao = calcAO(pos, N);
 
           vec3 albedo = vec3(0.5);
           float metalness = 0.08;
-          float roughness = 0.32;
-          float clearcoat = 0.15;
+          float roughness = 0.28;
+          float clearcoat = 0.20;
+          float sss = 0.0;
           vec3 emissive = vec3(0.0);
 
           if (u_kind == 0) {
+            vec3 pSol = toSolarLocal(pos);
             if (mat > 9.5) {
-              // Mat 10: Sol 3D + 6 raios capsulares (brilho aumenta com a geração solar u_val)
-              albedo = mix(vec3(0.95, 0.78, 0.14), vec3(1.0, 0.90, 0.26), u_val);
-              metalness = 0.05;
-              roughness = 0.28;
-              clearcoat = 0.20;
-              float rimSun = pow(1.0 - max(dot(N, V), 0.0), 2.2);
-              emissive = vec3(1.0, 0.80, 0.15) * (0.22 + 0.85 * u_val + rimSun * 0.45 * u_val);
+              // Mat 10: Sol 3D + 6 raios capsulares
+              albedo = mix(vec3(0.96, 0.79, 0.15), vec3(1.0, 0.92, 0.28), u_val);
+              metalness = 0.04;
+              roughness = 0.24;
+              clearcoat = 0.30;
+              sss = 0.45;
+              float rimSun = pow(1.0 - max(dot(N, V), 0.0), 2.1);
+              emissive = vec3(1.0, 0.82, 0.16) * (0.24 + 0.90 * u_val + rimSun * 0.50 * u_val);
             } else if (mat < 1.5) {
               // Mat 1: Moldura branca/prata arredondada da placa solar
-              albedo = vec3(0.91, 0.94, 0.97);
-              metalness = 0.22;
+              albedo = vec3(0.93, 0.95, 0.98);
+              metalness = 0.20;
+              roughness = 0.18;
+              clearcoat = 0.60;
+              // Mantém os sulcos internos entre as células claros e limpos como na referência
+              ao = mix(0.82, 1.0, ao);
+            } else if (mat < 2.5) {
+              // Mat 2: 12 Células solares azuis 3D almofadadas (idênticas à referência 1)
+              albedo = mix(vec3(0.11, 0.48, 0.90), vec3(0.20, 0.59, 0.97), clamp(N.y * 0.5 + 0.5, 0.0, 1.0));
+              metalness = 0.06;
               roughness = 0.20;
               clearcoat = 0.55;
-            } else if (mat < 2.5) {
-              // Mat 2: 12 Células solares azuis 3D arredondadas (idênticas à imagem 1, sem saturar para ciano)
-              albedo = mix(vec3(0.06, 0.30, 0.68), vec3(0.10, 0.40, 0.78), clamp(N.y * 0.5 + 0.5, 0.0, 1.0));
-              metalness = 0.08;
-              roughness = 0.24;
-              clearcoat = 0.25;
-              emissive = vec3(0.04, 0.16, 0.42) * 0.14 + vec3(0.85, 0.62, 0.14) * u_val * 0.06;
+              sss = 0.30;
+              ao = mix(0.78, 1.0, ao);
+              emissive = vec3(0.06, 0.26, 0.58) * 0.20 + vec3(0.90, 0.68, 0.18) * u_val * 0.08;
             } else {
-              // Mat 3: Base e colunas metálicas prateadas do pedestal
-              albedo = vec3(0.80, 0.83, 0.86);
+              // Mat 3: Pedestal, colunas e mancais metálicos prateados
+              albedo = vec3(0.82, 0.85, 0.88);
               metalness = 0.65;
-              roughness = 0.24;
-              clearcoat = 0.35;
-              // Reflexo sutil verde-oliva na quina direita da base como na referência
-              float cornerTint = smoothstep(0.15, 0.45, pos.x) * smoothstep(-0.35, -0.50, pos.y);
-              albedo = mix(albedo, vec3(0.48, 0.56, 0.42), cornerTint * 0.45);
+              roughness = 0.22;
+              clearcoat = 0.40;
+              float cornerTint = smoothstep(0.10, 0.42, pSol.x) * smoothstep(-0.34, -0.50, pSol.y);
+              albedo = mix(albedo, vec3(0.50, 0.58, 0.44), cornerTint * 0.42);
             }
           } else if (u_kind == 1) {
             vec3 pBat = toBatteryLocal(pos);
             if (mat < 1.5) {
-              // Mat 1: Corpo grafite fosco da bateria automotiva
-              albedo = vec3(0.22, 0.23, 0.25);
-              metalness = 0.12;
-              roughness = 0.38;
-              clearcoat = 0.15;
+              albedo = vec3(0.22, 0.23, 0.255);
+              metalness = 0.14;
+              roughness = 0.36;
+              clearcoat = 0.20;
             } else if (mat > 10.5) {
-              // Mat 11: Alça superior preta fosca
               albedo = vec3(0.13, 0.14, 0.16);
-              metalness = 0.10;
-              roughness = 0.44;
-            } else if (mat > 4.5 && mat < 5.5) {
-              // Mat 5: Polo positivo vermelho vivo (+)
-              albedo = vec3(0.90, 0.26, 0.19);
-              metalness = 0.08;
-              roughness = 0.24;
-              clearcoat = 0.45;
-            } else if (mat > 3.5 && mat < 4.5) {
-              // Mat 4: Polo negativo azul-aço (-)
-              albedo = vec3(0.32, 0.49, 0.66);
               metalness = 0.12;
-              roughness = 0.24;
-              clearcoat = 0.45;
+              roughness = 0.42;
+              clearcoat = 0.12;
+            } else if (mat > 4.5 && mat < 5.5) {
+              albedo = vec3(0.91, 0.26, 0.19);
+              metalness = 0.10;
+              roughness = 0.22;
+              clearcoat = 0.55;
+              sss = 0.20;
+            } else if (mat > 3.5 && mat < 4.5) {
+              albedo = vec3(0.33, 0.50, 0.68);
+              metalness = 0.16;
+              roughness = 0.22;
+              clearcoat = 0.55;
+              sss = 0.15;
             } else {
-              // Mat 6: Símbolo do raio 3D frontal — vai enchendo e se completando conforme u_val (SOC)
-              // O raio vai de pBat.y = -0.32 (ponta inferior, 0%) até pBat.y = +0.18 (topo, 100%)
               float hBolt = clamp((pBat.y - (-0.32)) / 0.50, 0.0, 1.0);
               float fillLvl = clamp(u_val, 0.0, 1.0);
               float isFilled = 1.0 - smoothstep(fillLvl - 0.018, fillLvl + 0.018, hBolt);
               float meniscus = exp(-pow((hBolt - fillLvl) * 34.0, 2.0)) * step(0.02, fillLvl) * step(fillLvl, 0.99);
 
-              // Parte preenchida: amarelo-ouro luminoso; parte a preencher: relevo 3D dourado-âmbar sólido
-              vec3 boltFullCol = u_val < 0.20 ? vec3(0.96, 0.32, 0.20) : vec3(1.0, 0.78, 0.14);
+              vec3 boltFullCol = u_val < 0.20 ? vec3(0.96, 0.32, 0.20) : vec3(1.0, 0.79, 0.14);
               vec3 boltEmptyCol = vec3(0.66, 0.50, 0.18);
 
               albedo = mix(boltEmptyCol, boltFullCol, isFilled);
-              metalness = mix(0.16, 0.08, isFilled);
-              roughness = mix(0.28, 0.16, isFilled);
-              clearcoat = 0.65;
-              emissive = boltFullCol * (isFilled * 0.42 + 0.08) + vec3(1.0, 0.94, 0.65) * meniscus * 0.75;
+              metalness = mix(0.18, 0.10, isFilled);
+              roughness = mix(0.26, 0.14, isFilled);
+              clearcoat = 0.75;
+              sss = 0.25 * isFilled;
+              emissive = boltFullCol * (isFilled * 0.44 + 0.08) + vec3(1.0, 0.95, 0.68) * meniscus * 0.80;
             }
           } else {
-            // u_kind == 2: Termômetro 3D em cápsula com escala °C e bulbo reativo
             vec3 pTh = toThermoLocal(pos);
             if (mat < 3.5) {
-              // Mat 3: Corpo lateral prateado + Aro frontal azul-ardósia escuro (idêntico à imagem 3)
               float isFrontBezel = smoothstep(0.035, 0.055, pTh.z);
-              vec3 sideSilver = vec3(0.76, 0.80, 0.86);
-              vec3 bezelNavy = vec3(0.25, 0.32, 0.45);
+              vec3 sideSilver = vec3(0.78, 0.82, 0.88);
+              vec3 bezelNavy = vec3(0.24, 0.31, 0.44);
               albedo = mix(sideSilver, bezelNavy, isFrontBezel);
-              metalness = mix(0.30, 0.18, isFrontBezel);
-              roughness = 0.24;
-              clearcoat = 0.45;
-            } else if (mat < 4.5) {
-              // Mat 4: Berço azul-aço ao redor do tubo e do bulbo
-              albedo = vec3(0.36, 0.49, 0.66);
-              metalness = 0.18;
-              roughness = 0.22;
+              metalness = mix(0.38, 0.20, isFrontBezel);
+              roughness = 0.21;
               clearcoat = 0.55;
+            } else if (mat < 4.5) {
+              albedo = vec3(0.36, 0.49, 0.67);
+              metalness = 0.20;
+              roughness = 0.20;
+              clearcoat = 0.60;
             } else if (mat < 7.5) {
-              // Mat 7: Mostrador branco interno com símbolo °C e traços de escala pretos
               float marks = thermoScaleMask(pTh.xy);
-              albedo = mix(vec3(0.96, 0.97, 0.99), vec3(0.08, 0.10, 0.13), marks);
+              albedo = mix(vec3(0.96, 0.97, 0.99), vec3(0.07, 0.09, 0.12), marks);
               metalness = 0.02;
-              roughness = mix(0.20, 0.35, marks);
-              clearcoat = 0.25;
+              roughness = mix(0.18, 0.34, marks);
+              clearcoat = 0.30;
               emissive = vec3(0.18, 0.19, 0.20) * (1.0 - marks);
             } else if (mat > 11.5) {
-              // Mat 12: Parte superior do tubo capilar de vidro azulado (acima do líquido)
-              albedo = vec3(0.38, 0.52, 0.70);
+              albedo = vec3(0.38, 0.53, 0.72);
               metalness = 0.15;
-              roughness = 0.08;
+              roughness = 0.06;
               clearcoat = 1.0;
-              // Reflexo vertical branco de tubo de vidro
               float glassStrip = smoothstep(0.022, 0.004, abs(pTh.x - (-0.032)));
-              emissive = vec3(0.75, 0.85, 0.96) * glassStrip * 0.42;
+              emissive = vec3(0.78, 0.88, 0.98) * glassStrip * 0.46;
             } else {
-              // Mat 8: Bulbo e coluna líquida — nível e cor reagem à temperatura real (u_aux em °C)
               float tempC = u_aux;
-              vec3 cCold   = vec3(0.12, 0.48, 0.96); // <= 16°C: Azul frio
-              vec3 cMild   = vec3(0.08, 0.72, 0.54); // ~20°C: Verde-esmeralda
-              vec3 cNormal = vec3(0.94, 0.22, 0.16); // ~26.5°C+: Vermelho termômetro clássico
-              vec3 cHot    = vec3(0.82, 0.04, 0.12); // >= 40°C: Carmesim crítico
+              vec3 cCold   = vec3(0.12, 0.48, 0.96);
+              vec3 cMild   = vec3(0.08, 0.72, 0.54);
+              vec3 cNormal = vec3(0.94, 0.22, 0.16);
+              vec3 cHot    = vec3(0.82, 0.04, 0.12);
 
               vec3 liqColor;
               if (tempC < 19.0) {
@@ -754,18 +1037,17 @@ class StudioModels3D {
 
               albedo = liqColor;
               metalness = 0.10;
-              roughness = 0.07;
+              roughness = 0.06;
               clearcoat = 1.0;
+              sss = 0.35;
 
-              // Reflexos vítreos brancos no bulbo e na haste (idênticos à imagem 3)
               float tubeHighlight = smoothstep(0.018, 0.003, abs(pTh.x - (-0.032))) * step(-0.22, pTh.y);
               float bulbDot1 = smoothstep(0.038, 0.012, length(pTh.xy - vec2(-0.015, -0.35)));
               float bulbDot2 = smoothstep(0.042, 0.010, length(pTh.xy - vec2(-0.105, -0.33))) * 0.55;
-              emissive = liqColor * 0.28 + vec3(0.95, 0.97, 1.0) * (tubeHighlight * 0.45 + bulbDot1 * 0.75 + bulbDot2);
+              emissive = liqColor * 0.28 + vec3(0.96, 0.98, 1.0) * (tubeHighlight * 0.48 + bulbDot1 * 0.78 + bulbDot2);
             }
           }
 
-          // Iluminação de estúdio PBR (suave e limpa como render 3D de produto)
           float NdotL = max(dot(N, keyDir), 0.0);
           float NdotV = max(dot(N, V), 0.001);
           vec3 H = normalize(keyDir + V);
@@ -773,38 +1055,50 @@ class StudioModels3D {
           float VdotH = max(dot(V, H), 0.0);
 
           float shadow = calcSoftShadow(pos + N * 0.006, keyDir, 0.02, 1.4, 8.0);
-          shadow = mix(0.45, 1.0, shadow);
+          // Na placa solar, mantém sombra suave de estúdio para não escurecer os vãos das células
+          shadow = mix(u_kind == 0 ? 0.72 : 0.48, 1.0, shadow);
 
           vec3 F0 = mix(vec3(0.04), albedo, metalness);
           vec3 F = F_Schlick(VdotH, F0);
           float D = D_GGX(NdotH, roughness);
-          vec3 spec = (D * F) / (4.0 * max(NdotL * NdotV, 0.08));
+          float Vis = V_SmithGGXCorrelated(NdotV, max(NdotL, 0.001), roughness);
+          vec3 spec = D * Vis * F;
 
           vec3 kD = (1.0 - F) * (1.0 - metalness);
-          vec3 direct = (kD * albedo + spec * 0.45) * NdotL * shadow * 1.15;
+          float wrapDiff = max(0.0, (dot(N, keyDir) + sss) / (1.0 + sss));
+          vec3 direct = (kD * albedo * wrapDiff + spec * 0.50 * NdotL) * shadow * 1.14;
 
           float fillDiff = max(dot(N, fillDir), 0.0);
-          vec3 fill = albedo * vec3(0.88, 0.92, 1.0) * fillDiff * 0.42 * ao;
+          vec3 fill = albedo * vec3(0.88, 0.93, 1.0) * fillDiff * 0.42 * ao;
 
           float rim = pow(1.0 - NdotV, 3.0) * max(dot(N, rimDir), 0.0);
           vec3 rimLight = vec3(0.95, 0.97, 1.0) * rim * 0.30;
 
+          vec3 kS_ibl = F_SchlickRoughness(NdotV, F0, roughness);
+          vec3 envSpec = envStudioIBL(R, roughness) * kS_ibl * ao * mix(0.18, 0.48, metalness);
+
           float ccSpec = 0.0;
           if (clearcoat > 0.01) {
-            ccSpec = D_GGX(NdotH, 0.09) * shadow * NdotL * clearcoat * 0.22;
+            float Fc = 0.04 + 0.96 * pow(1.0 - VdotH, 5.0);
+            ccSpec = D_GGX(NdotH, 0.08) * Fc * shadow * NdotL * clearcoat * 0.24;
           }
 
           vec3 amb = albedo * (0.52 + 0.18 * N.y) * ao;
-          vec3 objCol = amb + direct + fill + rimLight + vec3(ccSpec) + emissive;
-
-          // Mapeamento suave de tom mantendo cores vibrantes e fiéis às referências
+          vec3 objCol = amb + direct + fill + rimLight + envSpec + vec3(ccSpec) + emissive;
           objCol = clamp(objCol, 0.0, 1.0);
 
           col = objCol;
           alpha = 1.0;
         }
 
-        gl_FragColor = vec4(col * alpha, alpha);
+        return vec4(col * alpha, alpha);
+      }
+
+      void main() {
+        // Supersampling Rotated Grid 2x (RGSS Anti-Aliasing) para silhuetas e chanfros ultra-nítidos
+        vec4 s0 = renderSample(gl_FragCoord.xy + vec2(-0.18, -0.32));
+        vec4 s1 = renderSample(gl_FragCoord.xy + vec2( 0.18,  0.32));
+        gl_FragColor = 0.5 * (s0 + s1);
       }
     `;
 
@@ -834,6 +1128,8 @@ class StudioModels3D {
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
     scene.program = prog;
+    scene.buffer = buf;
+    scene.aPos = aPos;
     scene.uniforms = {
       res: gl.getUniformLocation(prog, 'u_res'),
       time: gl.getUniformLocation(prog, 'u_time'),
@@ -862,24 +1158,24 @@ class StudioModels3D {
 
   loop(now) {
     this.rafId = 0;
+    const timeSec = now * 0.001;
 
-    // 1. Brilho do Sol proporcional à geração da placa solar (0..1)
+    if (this.bg) {
+      this.bg.render(timeSec);
+    }
+
     const pvRatio =
       this.state.pvUtilization > 0
         ? this.state.pvUtilization / 50
         : this.state.pvPower / 200;
-    const pvTarget = this.state.online && (this.state.generating || this.state.pvPower > 0.5)
-      ? Math.max(0.22, Math.min(1.0, pvRatio))
-      : 0.05;
+    const pvTarget =
+      this.state.online && (this.state.generating || this.state.pvPower > 0.5)
+        ? Math.max(0.22, Math.min(1.0, pvRatio))
+        : 0.05;
 
-    // 2. Nível de preenchimento do raio da bateria (0..1 conforme SOC)
     const socTarget = Math.max(0.0, Math.min(1.0, this.state.soc / 100));
-
-    // 3. Nível da coluna do termômetro (0..1 mapeado de 0°C a 50°C)
     const tempTarget = Math.max(0.08, Math.min(0.96, this.state.temp / 48));
     const darkTarget = this.state.dark ? 1.0 : 0.0;
-
-    let anyMoving = false;
 
     this.scenes.forEach((sc) => {
       if (!sc.visible) return;
@@ -894,25 +1190,14 @@ class StudioModels3D {
       sc.mouseY += (sc.targetMouseY - sc.mouseY) * 0.14;
       sc.hoverVal = (sc.hoverVal || 0) + ((sc.hovered ? 1 : 0) - (sc.hoverVal || 0)) * 0.14;
 
-      if (
-        Math.abs(targetVal - sc.smoothVal) > 0.002 ||
-        Math.abs(targetAux - sc.smoothAux) > 0.01 ||
-        Math.abs(darkTarget - sc.smoothDark) > 0.005 ||
-        Math.abs(sc.targetMouseX - sc.mouseX) > 0.003 ||
-        Math.abs(sc.targetMouseY - sc.mouseY) > 0.003 ||
-        sc.hovered
-      ) {
-        anyMoving = true;
-      }
-
       if (sc.gl && sc.program) {
-        this.renderWebGLScene(sc, now * 0.001);
+        this.renderWebGLScene(sc, timeSec);
       } else if (sc.ctx2d) {
         this.renderFallback2D(sc);
       }
     });
 
-    if (!this.reducedMotion && (anyMoving || now < this.activeUntil)) {
+    if (!this.reducedMotion && !document.hidden) {
       this.rafId = requestAnimationFrame((t) => this.loop(t));
     }
   }
@@ -920,6 +1205,8 @@ class StudioModels3D {
   renderWebGLScene(sc, timeSec) {
     const gl = sc.gl;
     gl.useProgram(sc.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, sc.buffer);
+    gl.vertexAttribPointer(sc.aPos, 2, gl.FLOAT, false, 0, 0);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
