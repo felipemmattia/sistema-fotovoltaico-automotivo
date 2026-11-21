@@ -1,322 +1,23 @@
 /**
- * Telemetria FV — Renderizador 3D PBR (Metodologia vgpu) + Background Arquitetônico 3D.
+ * Telemetria FV — Renderizador 3D PBR em WebGL (Metodologia vgpu).
  *
- * 1. SolarArchitecturalBackground (#graphite-bg-canvas):
- *    Campo topográfico 3D contínuo de irradiância solar com iluminação física PBR (GGX + Schlick),
- *    curvas de nível (isolinhas) anti-aliased por gradiente analítico e grade de precisão CAD
- *    com miras de calibração (+) que reagem suavemente ao fluxo energético e ao cursor.
- *
- * 2. StudioModels3D (#canvas-pv, #canvas-soc, #canvas-temp):
- *    Modelagem SDF com montagem estrutural contínua (shape-and-assembly),
- *    supersampling 2x nas bordas (RGSS AA) e sombreamento físico PBR
- *    (Smith-GGX Correlated + Fresnel Schlick + Clearcoat + IBL):
- *      - #canvas-pv:   Placa solar 3D sobre pedestal e Sol 3D virados na diagonal
- *                      olhando para a esquerda (alinhados à bateria e ao termômetro);
- *                      brilho do sol reage à potência solar gerada.
- *      - #canvas-soc:  Bateria automotiva 3D com alça, polos (+ / -) e raio 3D
- *                      frontal que se preenche conforme o estado de carga (SOC %).
- *      - #canvas-temp: Termômetro 3D em cápsula com escala °C cuja coluna líquida
- *                      e cor reagem à temperatura real do sensor NTC.
+ * Modelagem SDF com montagem estrutural contínua (shape-and-assembly),
+ * supersampling 2x nas bordas (RGSS AA), lente teleobjetiva de estúdio e
+ * sombreamento físico PBR (Smith-GGX Correlated + Fresnel Schlick + Clearcoat + IBL):
+ *   1. #canvas-pv   — Placa solar 3D sobre pedestal e Sol 3D virados na diagonal
+ *                     olhando para a esquerda (alinhados à bateria e ao termômetro);
+ *                     brilho do sol reage à potência solar gerada.
+ *   2. #canvas-soc  — Bateria automotiva 3D com alça, polos (+ / -) e raio 3D
+ *                     frontal que se preenche conforme o estado de carga (SOC %).
+ *   3. #canvas-temp — Termômetro 3D em cápsula com escala °C cuja coluna líquida
+ *                     e cor reagem à temperatura real do sensor NTC.
  */
-
-class SolarArchitecturalBackground {
-  constructor(canvasId = 'graphite-bg-canvas') {
-    this.canvas = document.getElementById(canvasId);
-    if (!this.canvas) return;
-
-    this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    this.dark = document.documentElement.getAttribute('data-theme') === 'dark';
-    this.smoothDark = this.dark ? 1.0 : 0.0;
-    this.energy = 0.25;
-    this.smoothEnergy = 0.25;
-    this.mouseX = 0.0;
-    this.mouseY = 0.0;
-    this.targetMouseX = 0.0;
-    this.targetMouseY = 0.0;
-
-    this.gl =
-      this.canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false }) ||
-      this.canvas.getContext('webgl', { alpha: false, antialias: false, depth: false });
-
-    if (!this.gl || !this.initShader()) return;
-
-    this.resize();
-    window.addEventListener('resize', () => this.resize());
-    window.addEventListener(
-      'pointermove',
-      (e) => {
-        this.targetMouseX = (e.clientX / Math.max(1, window.innerWidth)) * 2 - 1;
-        this.targetMouseY = -((e.clientY / Math.max(1, window.innerHeight)) * 2 - 1);
-      },
-      { passive: true }
-    );
-  }
-
-  setTheme(isDark) {
-    this.dark = Boolean(isDark);
-  }
-
-  setEnergyLevel(level) {
-    this.energy = Math.max(0.15, Math.min(1.0, level));
-  }
-
-  resize() {
-    if (!this.canvas || !this.gl) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
-    const w = Math.max(1, Math.round(window.innerWidth * dpr));
-    const h = Math.max(1, Math.round(window.innerHeight * dpr));
-    if (this.canvas.width !== w || this.canvas.height !== h) {
-      this.canvas.width = w;
-      this.canvas.height = h;
-      this.gl.viewport(0, 0, w, h);
-    }
-  }
-
-  initShader() {
-    const gl = this.gl;
-    const vsSource = `
-      attribute vec2 a_pos;
-      varying vec2 v_uv;
-      void main() {
-        v_uv = a_pos * 0.5 + 0.5;
-        gl_Position = vec4(a_pos, 0.0, 1.0);
-      }
-    `;
-
-    const fsSource = `
-      precision highp float;
-      varying vec2 v_uv;
-
-      uniform vec2 u_res;
-      uniform float u_time;
-      uniform float u_dark;
-      uniform float u_energy;
-      uniform vec2 u_mouse;
-
-      // Campo de elevação 3D harmônico contínuo (ondas suaves de irradiância solar sem ruído granular)
-      float elevationField(vec2 p, float t) {
-        vec2 q = p * 1.35;
-        q += 0.26 * vec2(
-          sin(q.y * 1.55 + t * 0.28),
-          cos(q.x * 1.40 - t * 0.23)
-        );
-        q += 0.13 * vec2(
-          cos(q.y * 2.70 - t * 0.20 + q.x * 0.8),
-          sin(q.x * 2.40 + t * 0.25 - q.y * 0.7)
-        );
-        float w1 = sin(q.x * 1.65 + q.y * 1.05 + t * 0.22);
-        float w2 = cos(q.x * 1.05 - q.y * 1.75 - t * 0.17);
-        float w3 = sin((q.x - q.y) * 1.25 + t * 0.14);
-        return (w1 * 0.42 + w2 * 0.38 + w3 * 0.20);
-      }
-
-      float D_GGX_Bg(float NdotH, float roughness) {
-        float a = roughness * roughness;
-        float a2 = a * a;
-        float d = (NdotH * NdotH) * (a2 - 1.0) + 1.0;
-        return a2 / (3.14159265 * d * d + 1e-5);
-      }
-
-      void main() {
-        vec2 uv = gl_FragCoord.xy / u_res;
-        float aspect = u_res.x / max(u_res.y, 1.0);
-        vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
-
-        float t = u_time * 0.85;
-        vec2 parallax = u_mouse * 0.035;
-        vec2 wp = p - parallax;
-
-        // 1. Amostragem do relevo 3D e cálculo de normal analítica por diferenças centrais (vgpu PBR)
-        const float eps = 0.0035;
-        float hC = elevationField(wp, t);
-        float hR = elevationField(wp + vec2(eps, 0.0), t);
-        float hL = elevationField(wp - vec2(eps, 0.0), t);
-        float hU = elevationField(wp + vec2(0.0, eps), t);
-        float hD = elevationField(wp - vec2(0.0, eps), t);
-
-        vec2 grad = vec2(hR - hL, hU - hD) / (2.0 * eps);
-        float gradMag = length(grad);
-        vec3 N = normalize(vec3(-grad * 0.14, 1.0));
-        vec3 V = normalize(vec3(-p * 0.25, 1.0));
-
-        // 2. Duas fontes de luz física PBR (Âmbar Solar à esquerda/topo e Verde-Teal Bateria à direita)
-        vec3 sunLightPos = vec3(-0.48 + u_mouse.x * 0.22 + sin(t * 0.3) * 0.12, 0.38 + u_mouse.y * 0.16, 0.75);
-        vec3 batLightPos = vec3( 0.52 - u_mouse.x * 0.18 + cos(t * 0.25) * 0.10, -0.18 - u_mouse.y * 0.12, 0.80);
-
-        vec3 L1 = normalize(sunLightPos - vec3(p, 0.0));
-        vec3 L2 = normalize(batLightPos - vec3(p, 0.0));
-        vec3 H1 = normalize(L1 + V);
-        vec3 H2 = normalize(L2 + V);
-
-        float spec1 = min(D_GGX_Bg(max(dot(N, H1), 0.0), 0.52) * max(dot(N, L1), 0.0), 1.25);
-        float spec2 = min(D_GGX_Bg(max(dot(N, H2), 0.0), 0.54) * max(dot(N, L2), 0.0), 1.25);
-
-        float distSun = length(p - sunLightPos.xy);
-        float distBat = length(p - batLightPos.xy);
-        float atten1 = exp(-distSun * distSun * 1.35);
-        float atten2 = exp(-distBat * distBat * 1.45);
-
-        // 3. Curvas de nível topográficas (isolinhas de irradiância) com espessura constante anti-aliased
-        float isoFreq = 3.8;
-        float isoVal = hC * isoFreq;
-        float isoFract = abs(fract(isoVal - 0.5) - 0.5);
-        float pixelScale = 1.35 / min(u_res.x, u_res.y);
-        float isoDistWorld = isoFract / max(gradMag * isoFreq, 0.65);
-        float isoline = 1.0 - smoothstep(pixelScale * 0.4, pixelScale * 1.9, isoDistWorld);
-
-        // Sub-isolinhas secundárias mais sutis
-        float subIsoFract = abs(fract(isoVal * 2.0 - 0.5) - 0.5);
-        float subIsoDist = subIsoFract / max(gradMag * isoFreq * 2.0, 1.1);
-        float subIsoline = (1.0 - smoothstep(pixelScale * 0.3, pixelScale * 1.6, subIsoDist)) * 0.32;
-        float contourMask = max(isoline, subIsoline);
-
-        // 4. Grade arquitetônica de engenharia CAD com miras (+) nos vértices
-        float gridSize = 0.115;
-        vec2 gUv = (p - parallax * 0.4) / gridSize;
-        vec2 gCell = abs(fract(gUv - 0.5) - 0.5) * gridSize;
-        float lineX = 1.0 - smoothstep(pixelScale * 0.3, pixelScale * 1.4, gCell.x);
-        float lineY = 1.0 - smoothstep(pixelScale * 0.3, pixelScale * 1.4, gCell.y);
-        float baseGrid = max(lineX, lineY);
-
-        // Miras (+) apenas nos cruzamentos da grade
-        float crossArm = 1.0 - smoothstep(0.008, 0.011, min(max(gCell.x, gCell.y), 0.015));
-        float crossMask = baseGrid * (1.0 - smoothstep(0.007, 0.010, max(gCell.x, gCell.y)));
-
-        // Máscara de revelação espacial (grade e curvas brilham onde a luz ou o cursor incidem)
-        float cursorGlow = exp(-dot(p - u_mouse * 0.45, p - u_mouse * 0.45) * 4.2);
-        float waveCrest = smoothstep(0.15, 0.95, spec1 * 0.45 + spec2 * 0.40);
-        float reveal = clamp(0.18 + atten1 * 0.55 + atten2 * 0.45 + cursorGlow * 0.45 + waveCrest * 0.35, 0.0, 1.0);
-
-        // Cores semânticas do sistema (Âmbar Solar + Teal Bateria + Prata Arquitetônico)
-        vec3 amberDark = vec3(0.94, 0.64, 0.24);
-        vec3 tealDark  = vec3(0.24, 0.77, 0.71);
-        vec3 slateSilver = vec3(0.56, 0.60, 0.68);
-
-        vec3 accentBlend = mix(
-          slateSilver,
-          mix(amberDark, tealDark, smoothstep(-0.35, 0.45, p.x)),
-          0.62
-        );
-
-        // ==================== Composição Dark Mode ====================
-        vec3 darkBgBase = vec3(0.067, 0.071, 0.082);
-        vec3 darkBgDeep = vec3(0.048, 0.050, 0.058);
-        float vig = smoothstep(1.18, 0.20, length(p * vec2(0.85, 1.05)));
-        vec3 darkCol = mix(darkBgDeep, darkBgBase, vig);
-
-        // Iluminação volumétrica suave das ondas 3D
-        darkCol += amberDark * (atten1 * 0.055 + spec1 * atten1 * 0.042) * (0.75 + 0.25 * u_energy);
-        darkCol += tealDark  * (atten2 * 0.048 + spec2 * atten2 * 0.036);
-
-        // Grade CAD sutil + miras (+) nos cruzamentos
-        darkCol += mix(vec3(0.22, 0.24, 0.28), accentBlend, 0.35) * baseGrid * reveal * 0.14;
-        darkCol += accentBlend * crossMask * reveal * 0.34;
-
-        // Curvas de nível topográficas iluminadas pelas cristas PBR
-        float isoHighlight = reveal * (0.32 + 0.68 * clamp(spec1 * 0.6 + spec2 * 0.5, 0.0, 1.0));
-        darkCol += accentBlend * contourMask * isoHighlight * 0.32;
-
-        // ==================== Composição Light Mode ====================
-        vec3 lightBgBase = vec3(0.962, 0.965, 0.974);
-        vec3 lightBgEdge = vec3(0.925, 0.930, 0.944);
-        vec3 lightCol = mix(lightBgEdge, lightBgBase, vig);
-
-        vec3 amberLight = vec3(0.76, 0.38, 0.04);
-        vec3 tealLight  = vec3(0.06, 0.46, 0.43);
-        vec3 lightAccent = mix(
-          vec3(0.38, 0.42, 0.50),
-          mix(amberLight, tealLight, smoothstep(-0.35, 0.45, p.x)),
-          0.58
-        );
-
-        lightCol += amberLight * (atten1 * 0.032 + spec1 * atten1 * 0.025);
-        lightCol += tealLight  * (atten2 * 0.028 + spec2 * atten2 * 0.022);
-        lightCol -= vec3(0.18, 0.20, 0.25) * baseGrid * reveal * 0.09;
-        lightCol -= lightAccent * crossMask * reveal * 0.22;
-        lightCol = mix(lightCol, lightCol - lightAccent * 0.18, contourMask * isoHighlight * 0.65);
-
-        vec3 finalCol = mix(lightCol, darkCol, u_dark);
-        gl_FragColor = vec4(clamp(finalCol, 0.0, 1.0), 1.0);
-      }
-    `;
-
-    const vs = this.compile(gl, gl.VERTEX_SHADER, vsSource);
-    const fs = this.compile(gl, gl.FRAGMENT_SHADER, fsSource);
-    if (!vs || !fs) return false;
-
-    const prog = gl.createProgram();
-    gl.attachShader(prog, vs);
-    gl.attachShader(prog, fs);
-    gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return false;
-
-    const buf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
-      gl.STATIC_DRAW
-    );
-
-    const aPos = gl.getAttribLocation(prog, 'a_pos');
-    gl.enableVertexAttribArray(aPos);
-    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-    this.program = prog;
-    this.buffer = buf;
-    this.aPos = aPos;
-    this.uniforms = {
-      res: gl.getUniformLocation(prog, 'u_res'),
-      time: gl.getUniformLocation(prog, 'u_time'),
-      dark: gl.getUniformLocation(prog, 'u_dark'),
-      energy: gl.getUniformLocation(prog, 'u_energy'),
-      mouse: gl.getUniformLocation(prog, 'u_mouse')
-    };
-    return true;
-  }
-
-  compile(gl, type, source) {
-    const sh = gl.createShader(type);
-    gl.shaderSource(sh, source);
-    gl.compileShader(sh);
-    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-      console.warn('[SolarArchitecturalBg] Erro GLSL:', gl.getShaderInfoLog(sh));
-      gl.deleteShader(sh);
-      return null;
-    }
-    return sh;
-  }
-
-  render(timeSec) {
-    if (!this.gl || !this.program) return;
-    const gl = this.gl;
-
-    const targetDark = this.dark ? 1.0 : 0.0;
-    this.smoothDark += (targetDark - this.smoothDark) * 0.14;
-    this.smoothEnergy += (this.energy - this.smoothEnergy) * 0.08;
-    this.mouseX += (this.targetMouseX - this.mouseX) * 0.06;
-    this.mouseY += (this.targetMouseY - this.mouseY) * 0.06;
-
-    gl.useProgram(this.program);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-    gl.vertexAttribPointer(this.aPos, 2, gl.FLOAT, false, 0, 0);
-
-    gl.uniform2f(this.uniforms.res, this.canvas.width, this.canvas.height);
-    gl.uniform1f(this.uniforms.time, this.reducedMotion ? 0.0 : timeSec);
-    gl.uniform1f(this.uniforms.dark, this.smoothDark);
-    gl.uniform1f(this.uniforms.energy, this.smoothEnergy);
-    gl.uniform2f(this.uniforms.mouse, this.mouseX, this.mouseY);
-
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-  }
-}
 
 class StudioModels3D {
   constructor() {
     this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.scenes = [];
     this.rafId = 0;
-    this.bg = new SolarArchitecturalBackground('graphite-bg-canvas');
 
     this.state = {
       pvPower: 0,
@@ -382,7 +83,6 @@ class StudioModels3D {
 
   setTheme(isDark) {
     this.state.dark = Boolean(isDark);
-    if (this.bg) this.bg.setTheme(this.state.dark);
     this.wake();
   }
 
@@ -1192,11 +892,6 @@ class StudioModels3D {
       this.state.online && (this.state.generating || this.state.pvPower > 0.5)
         ? Math.max(0.22, Math.min(1.0, pvRatio))
         : 0.05;
-
-    if (this.bg) {
-      this.bg.setEnergyLevel(pvTarget);
-      this.bg.render(timeSec);
-    }
 
     const socTarget = Math.max(0.0, Math.min(1.0, this.state.soc / 100));
     const tempTarget = Math.max(0.08, Math.min(0.96, this.state.temp / 48));
