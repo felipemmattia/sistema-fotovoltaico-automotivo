@@ -19,12 +19,12 @@
 
 /* ---------- Tema claro (Graphite) ---------- */
 [data-theme='light'] {
-  --bg: #ebecef;
+  --bg: #f3f4f7;
   --surface: #ffffff;
   --surface-hi: #ffffff;
-  --card-glass-hi: rgba(255, 255, 255, 0.84);
-  --card-glass-lo: rgba(250, 250, 252, 0.78);
-  --topbar-glass: rgba(255, 255, 255, 0.82);
+  --card-glass-hi: rgba(255, 255, 255, 0.88);
+  --card-glass-lo: rgba(252, 252, 254, 0.82);
+  --topbar-glass: rgba(255, 255, 255, 0.86);
   --surface-hover: #fcfcfd;
   --raised: #f1f1f3;
   --raised-hi: #f7f7f8;
@@ -59,12 +59,12 @@
 
 /* ---------- Tema escuro (Graphite) ---------- */
 [data-theme='dark'] {
-  --bg: #101114;
+  --bg: #0f1013;
   --surface: #18181b;
   --surface-hi: #1e1e22;
-  --card-glass-hi: rgba(26, 27, 31, 0.78);
-  --card-glass-lo: rgba(18, 19, 22, 0.74);
-  --topbar-glass: rgba(18, 19, 22, 0.76);
+  --card-glass-hi: rgba(26, 27, 32, 0.84);
+  --card-glass-lo: rgba(20, 21, 25, 0.80);
+  --topbar-glass: rgba(18, 19, 23, 0.84);
   --surface-hover: #222226;
   --raised: #222226;
   --raised-hi: #29292e;
