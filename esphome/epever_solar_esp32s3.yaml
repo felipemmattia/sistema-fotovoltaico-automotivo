@@ -21,11 +21,28 @@ esp32:
     type: arduino
 
 
-# Wi-Fi Configuration with auto-reconnect & Fallback Access Point
+# Wi-Fi Configuration with multi-network priority, auto-reconnect & Fallback Access Point
+# Note: fast_connect MUST stay disabled when using multiple networks so ESPHome scans and picks by priority
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  fast_connect: true
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+      priority: 100
+    - ssid: !secret wifi_ssid_vw
+      password: !secret wifi_password_vw
+      priority: 60
+    - ssid: !secret wifi_ssid_cat8010_adm
+      password: !secret wifi_password_cat8010_adm
+      priority: 40
+    - ssid: !secret wifi_ssid_cat810_adm
+      password: !secret wifi_password_cat810_adm
+      priority: 35
+    - ssid: !secret wifi_ssid_cat8010_educ
+      password: !secret wifi_password_cat8010_educ
+      priority: 20
+    - ssid: !secret wifi_ssid_cat810_educ
+      password: !secret wifi_password_cat810_educ
+      priority: 15
   power_save_mode: LIGHT
   
   # Fallback AP when WiFi network is disconnected/out of range on the road
@@ -570,12 +587,17 @@ interval:
                                 }
                               }
 
-# Manual Reset button for peak power counter
+# Manual Reset button for peak power counter & Wi-Fi diagnostics
 text_sensor:
   - platform: template
     name: "Mesh Telemetry JSON"
     id: mesh_telemetry_json
     internal: false
+  - platform: wifi_info
+    ip_address:
+      name: "ESP32 IP Address"
+    ssid:
+      name: "ESP32 Connected SSID"
 
 button:
   - platform: template
