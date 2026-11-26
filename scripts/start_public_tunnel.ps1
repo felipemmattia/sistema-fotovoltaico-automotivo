@@ -15,6 +15,7 @@ param(
 )
 
 $ErrorActionPreference = "SilentlyContinue"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $backendDir = Join-Path $projectRoot "dashboard\backend"
 $binDir = Join-Path $PSScriptRoot "bin"
@@ -25,6 +26,73 @@ $envDuckFile = Join-Path $projectRoot ".env.duckdns"
 if (-not (Test-Path $binDir)) {
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 }
+
+# 0. Garante Node.js e GitHub CLI portateis (funciona sem winget e sem permissao de Administrador!)
+function Ensure-PortableNode {
+    $cmd = Get-Command node -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) { return $cmd.Source }
+
+    $localNodeDir = Join-Path $binDir "node"
+    $localNodeExe = Join-Path $localNodeDir "node.exe"
+    if (Test-Path $localNodeExe) {
+        $env:PATH = "$localNodeDir;$env:PATH"
+        return $localNodeExe
+    }
+
+    Write-Host "[SETUP] Node.js nao encontrado. Baixando versao portatil (sem precisar de Admin)..." -ForegroundColor Cyan
+    $nodeVer = "v22.23.5"
+    $zipPath = Join-Path $binDir "node-portable.zip"
+    $extractTmp = Join-Path $binDir "node-tmp"
+    Invoke-WebRequest -Uri "https://nodejs.org/dist/$nodeVer/node-$nodeVer-win-x64.zip" -OutFile $zipPath -UseBasicParsing
+    if (Test-Path $extractTmp) { Remove-Item $extractTmp -Recurse -Force }
+    Expand-Archive -Path $zipPath -DestinationPath $extractTmp -Force
+    $innerDir = Get-ChildItem $extractTmp -Directory | Select-Object -First 1
+    if ($innerDir) {
+        if (Test-Path $localNodeDir) { Remove-Item $localNodeDir -Recurse -Force }
+        Move-Item -Path $innerDir.FullName -Destination $localNodeDir
+    }
+    Remove-Item $zipPath, $extractTmp -Recurse -Force -ErrorAction SilentlyContinue
+    $env:PATH = "$localNodeDir;$env:PATH"
+    Write-Host "[OK] Node.js portatil instalado em $localNodeDir" -ForegroundColor Green
+    return $localNodeExe
+}
+
+function Ensure-PortableGh {
+    $candidates = @(
+        (Join-Path $binDir "gh\bin\gh.exe"),
+        (Join-Path $binDir "bin\gh.exe")
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+    $cmd = Get-Command gh -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) { return $cmd.Source }
+
+    Write-Host "[SETUP] GitHub CLI (gh) nao encontrado. Baixando versao portatil..." -ForegroundColor Cyan
+    $ghVer = "2.106.0"
+    $zipPath = Join-Path $binDir "gh-portable.zip"
+    $ghDir = Join-Path $binDir "gh"
+    Invoke-WebRequest -Uri "https://github.com/cli/cli/releases/download/v$ghVer/gh_${ghVer}_windows_amd64.zip" -OutFile $zipPath -UseBasicParsing
+    if (Test-Path $ghDir) { Remove-Item $ghDir -Recurse -Force }
+    Expand-Archive -Path $zipPath -DestinationPath $ghDir -Force
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+    $ghExeFound = Join-Path $ghDir "bin\gh.exe"
+    Write-Host "[OK] GitHub CLI portatil pronto em $ghExeFound" -ForegroundColor Green
+    return $ghExeFound
+}
+
+$script:NodeExe = Ensure-PortableNode
+$script:GhExe = Ensure-PortableGh
+
+# Verifica login no GitHub CLI na primeira execucao interativa
+try {
+    & $script:GhExe auth status 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Host "[ACAO NECESSARIA] Faca login no GitHub UMA UNICA VEZ para publicar o tunel automaticamente:" -ForegroundColor Yellow
+        & $script:GhExe auth login --hostname github.com --git-protocol https --web
+    }
+} catch {}
 
 # 1. Registra PID atual do supervisor
 $pidFile = Join-Path $binDir "supervisor.pid"
@@ -74,7 +142,7 @@ function Ensure-BackendRunning {
 
     $env:PORT = "$LocalPort"
     $env:NODE_ENV = "production"
-    $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
+    $nodeExe = $script:NodeExe
     if (-not $nodeExe) { $nodeExe = "node" }
     Start-Process -FilePath $nodeExe -ArgumentList "server.js" -WorkingDirectory $backendDir -WindowStyle Hidden | Out-Null
 
@@ -127,8 +195,8 @@ function Publish-TunnelEndpoint([string]$tunnelUrl) {
     $jsonContent = $jsonObj | ConvertTo-Json -Depth 3
     Set-Content -Path $cfgPath -Value $jsonContent -Encoding UTF8
 
-    $ghExe = Join-Path $binDir "bin\gh.exe"
-    if (-not (Test-Path $ghExe)) { $ghExe = "gh" }
+    $ghExe = $script:GhExe
+    if (-not $ghExe) { $ghExe = "gh" }
     try {
         $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($jsonContent))
         $existing = & $ghExe api "repos/felipemmattia/sistema-fotovoltaico-automotivo/contents/runtime-config.json?ref=gh-pages" 2>$null | ConvertFrom-Json
