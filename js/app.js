@@ -209,13 +209,20 @@ document.addEventListener('DOMContentLoaded', () => {
       ];
 
       if (this.canvas && this.ctx) {
+        this.rafId = 0;
         this.resize();
         window.addEventListener('resize', () => this.resize());
         if ('ResizeObserver' in window && this.fillEl) {
           const ro = new ResizeObserver(() => this.resize());
           ro.observe(this.fillEl);
         }
-        requestAnimationFrame((t) => this.tick(t));
+      }
+    }
+
+    ensureRunning() {
+      if (!this.rafId && this.canvas && this.ctx) {
+        this.lastTime = performance.now();
+        this.rafId = requestAnimationFrame((t) => this.tick(t));
       }
     }
 
@@ -276,6 +283,11 @@ document.addEventListener('DOMContentLoaded', () => {
         this.fillEl.style.boxShadow = 'none';
       }
       this.resize();
+      if (this.online && this.soc > 0 && this.powerW > 0.25) {
+        this.ensureRunning();
+      } else if (this.ctx && this.canvas) {
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      }
     }
 
     resize() {
@@ -316,10 +328,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     tick(now) {
+      this.rafId = 0;
       const dt = Math.min(0.05, Math.max(0.001, (now - this.lastTime) / 1000));
       this.lastTime = now;
-
-      this.resize();
 
       if (this.ctx && this.width > 4 && this.height > 2 && this.online && this.soc > 0) {
         const ctx = this.ctx;
@@ -394,7 +405,15 @@ document.addEventListener('DOMContentLoaded', () => {
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
       }
 
-      requestAnimationFrame((t) => this.tick(t));
+      const shouldContinue =
+        !document.hidden &&
+        this.online &&
+        this.soc > 0 &&
+        (this.powerW > 0.25 || this.particles.length > 0);
+
+      if (shouldContinue) {
+        this.rafId = requestAnimationFrame((t) => this.tick(t));
+      }
     }
   }
 

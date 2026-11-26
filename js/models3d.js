@@ -18,6 +18,7 @@ class StudioModels3D {
     this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     this.scenes = [];
     this.rafId = 0;
+    this.activeUntil = performance.now() + 1800;
 
     this.state = {
       pvPower: 0,
@@ -56,6 +57,7 @@ class StudioModels3D {
             const sc = this.scenes.find((s) => s.canvas === entry.target);
             if (sc) sc.visible = entry.isIntersecting;
           });
+          this.wake(600);
         },
         { threshold: 0.05 }
       );
@@ -64,18 +66,21 @@ class StudioModels3D {
 
     window.addEventListener('resize', () => {
       this.scenes.forEach((s) => this.resizeScene(s));
+      this.wake(400);
     });
 
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && !this.rafId) {
-        this.rafId = requestAnimationFrame((t) => this.loop(t));
+      if (!document.hidden) {
+        this.wake(800);
       }
     });
 
-    this.wake();
+    this.wake(1800);
   }
 
-  wake() {
+  wake(durationMs = 1200) {
+    const target = performance.now() + durationMs;
+    if (target > this.activeUntil) this.activeUntil = target;
     if (!this.rafId) {
       this.rafId = requestAnimationFrame((t) => this.loop(t));
     }
@@ -83,7 +88,7 @@ class StudioModels3D {
 
   setTheme(isDark) {
     this.state.dark = Boolean(isDark);
-    this.wake();
+    this.wake(1000);
   }
 
   updateTelemetry(data) {
@@ -137,17 +142,20 @@ class StudioModels3D {
     if (card) {
       card.addEventListener('pointerenter', () => {
         scene.hovered = true;
+        this.wake(1500);
       });
       card.addEventListener('pointermove', (e) => {
         const r = card.getBoundingClientRect();
         scene.targetMouseX = ((e.clientX - r.left) / r.width) * 2 - 1;
         scene.targetMouseY = -(((e.clientY - r.top) / r.height) * 2 - 1);
         scene.hovered = true;
+        this.wake(800);
       });
       card.addEventListener('pointerleave', () => {
         scene.hovered = false;
         scene.targetMouseX = 0;
         scene.targetMouseY = 0;
+        this.wake(1000);
       });
     }
 
@@ -164,7 +172,7 @@ class StudioModels3D {
   }
 
   resizeScene(scene) {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     const rect = scene.canvas.getBoundingClientRect();
     const cssW = rect.width > 10 ? rect.width : 128;
     const cssH = rect.height > 10 ? rect.height : 128;
@@ -485,8 +493,8 @@ class StudioModels3D {
       float calcAO(vec3 pos, vec3 nor) {
         float occ = 0.0;
         float sca = 1.0;
-        for (int i = 0; i < 5; i++) {
-          float h = 0.018 + 0.080 * float(i) / 4.0;
+        for (int i = 0; i < 4; i++) {
+          float h = 0.02 + 0.08 * float(i) / 3.0;
           float d = mapScene(pos + h * nor).x;
           occ += (h - d) * sca;
           sca *= 0.72;
@@ -497,11 +505,11 @@ class StudioModels3D {
       float calcSoftShadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
         float res = 1.0;
         float t = mint;
-        for (int i = 0; i < 20; i++) {
+        for (int i = 0; i < 12; i++) {
           float h = mapScene(ro + rd * t).x;
           res = min(res, k * h / t);
-          t += clamp(h, 0.02, 0.10);
-          if (res < 0.005 || t > maxt) break;
+          t += clamp(h, 0.025, 0.12);
+          if (res < 0.01 || t > maxt) break;
         }
         return clamp(res, 0.0, 1.0);
       }
@@ -566,8 +574,8 @@ class StudioModels3D {
         return clamp(m, 0.0, 1.0);
       }
 
-      vec4 renderSample(vec2 fragCoord) {
-        vec2 uv = (fragCoord - 0.5 * u_res) / min(u_res.x, u_res.y);
+      void main() {
+        vec2 uv = (gl_FragCoord.xy - 0.5 * u_res) / min(u_res.x, u_res.y);
         float canvasMask = smoothstep(0.49, 0.34, length(uv));
 
         // Lente teleobjetiva de estúdio (elimina distorção trapezoidal de perspectiva nas bordas)
@@ -582,17 +590,17 @@ class StudioModels3D {
         vec3 fillDir = normalize(vec3(-0.68, 0.34, 0.58));
         vec3 rimDir = normalize(vec3(0.14, 0.62, -0.78));
 
-        float t = 3.8;
+        float t = 3.85;
         float mat = -1.0;
-        for (int i = 0; i < 72; i++) {
+        for (int i = 0; i < 52; i++) {
           vec3 pos = ro + rd * t;
           vec2 h = mapScene(pos);
-          if (h.x < 0.0010) {
+          if (h.x < 0.0014) {
             mat = h.y;
             break;
           }
           t += h.x;
-          if (t > 7.2) break;
+          if (t > 7.1) break;
         }
 
         vec3 col = vec3(0.0);
@@ -815,14 +823,7 @@ class StudioModels3D {
           alpha = 1.0;
         }
 
-        return vec4(col * alpha, alpha);
-      }
-
-      void main() {
-        // Supersampling Rotated Grid 2x (RGSS Anti-Aliasing) para silhuetas e chanfros ultra-nítidos
-        vec4 s0 = renderSample(gl_FragCoord.xy + vec2(-0.18, -0.32));
-        vec4 s1 = renderSample(gl_FragCoord.xy + vec2( 0.18,  0.32));
-        gl_FragColor = 0.5 * (s0 + s1);
+        gl_FragColor = vec4(col * alpha, alpha);
       }
     `;
 
@@ -897,6 +898,8 @@ class StudioModels3D {
     const tempTarget = Math.max(0.08, Math.min(0.96, this.state.temp / 48));
     const darkTarget = this.state.dark ? 1.0 : 0.0;
 
+    let anyMoving = false;
+
     this.scenes.forEach((sc) => {
       if (!sc.visible) return;
 
@@ -910,6 +913,17 @@ class StudioModels3D {
       sc.mouseY += (sc.targetMouseY - sc.mouseY) * 0.14;
       sc.hoverVal = (sc.hoverVal || 0) + ((sc.hovered ? 1 : 0) - (sc.hoverVal || 0)) * 0.14;
 
+      if (
+        Math.abs(targetVal - sc.smoothVal) > 0.002 ||
+        Math.abs(targetAux - sc.smoothAux) > 0.02 ||
+        Math.abs(darkTarget - sc.smoothDark) > 0.005 ||
+        Math.abs(sc.targetMouseX - sc.mouseX) > 0.004 ||
+        Math.abs(sc.targetMouseY - sc.mouseY) > 0.004 ||
+        sc.hovered
+      ) {
+        anyMoving = true;
+      }
+
       if (sc.gl && sc.program) {
         this.renderWebGLScene(sc, timeSec);
       } else if (sc.ctx2d) {
@@ -917,10 +931,7 @@ class StudioModels3D {
       }
     });
 
-    this.frameCount = (this.frameCount || 0) + 1;
-    const isAutomatedCapture = Boolean(navigator.webdriver) && this.frameCount > 4;
-
-    if (!this.reducedMotion && !document.hidden && !isAutomatedCapture) {
+    if (!this.reducedMotion && !document.hidden && (anyMoving || now < this.activeUntil)) {
       this.rafId = requestAnimationFrame((t) => this.loop(t));
     }
   }

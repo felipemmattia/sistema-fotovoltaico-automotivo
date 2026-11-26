@@ -184,13 +184,18 @@ class TelemetryMeshRepeater {
     };
 
     const pollVehicleEdge = async () => {
+      // Só sonda o ESP32 local se houver host explícito configurado ou se o servidor principal estiver desconectado
+      const hasExplicitHost = Boolean(localStorage.getItem('esp32_local_host'));
+      const serverOnline = this.ws && this.ws.readyState === 1;
+      if (serverOnline && !hasExplicitHost) return;
+
       const endpoints = getCandidateEndpoints();
       if (!endpoints.length) return;
 
       for (const base of endpoints) {
         try {
           const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 1400);
+          const timer = setTimeout(() => controller.abort(), 1200);
           const res = await fetch(`${base}/text_sensor/mesh_telemetry_json`, {
             signal: controller.signal,
             cache: 'no-store'
@@ -212,7 +217,7 @@ class TelemetryMeshRepeater {
       this.vehicleEdgeConnected = false;
     };
 
-    setInterval(pollVehicleEdge, 2000);
+    setInterval(pollVehicleEdge, 8000);
   }
 
   /**
