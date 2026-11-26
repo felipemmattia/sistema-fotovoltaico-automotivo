@@ -49,6 +49,10 @@ api:
 web_server:
   port: 80
 
+ota:
+  - platform: esphome
+  - platform: web_server
+
 logger:
   level: INFO
   hardware_uart: USB_CDC
@@ -62,7 +66,8 @@ time:
 # HTTP Request client for pushing JSON telemetry payloads to Online Dashboard
 http_request:
   useragent: "ESP32S3-Epever-Telemetry/1.0"
-  timeout: 10s
+  timeout: 3s
+  verify_ssl: false
   id: http_client
 
 # ==============================================================================
@@ -407,6 +412,18 @@ globals:
     type: uint32_t
     restore_value: false
     initial_value: '0'
+  - id: active_webhook_url
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+  - id: post_fail_count
+    type: int
+    restore_value: false
+    initial_value: '0'
+  - id: last_post_ok
+    type: bool
+    restore_value: false
+    initial_value: 'false'
 
 interval:
   - interval: 1s
@@ -491,13 +508,18 @@ interval:
           id(last_send_millis) = now_ms;
           ESP_LOGD("EPEVER_TELEMETRY", "Payload: %s", buf);
 
-      # Step 5: HTTP POST with capture_response to receive adaptive interval from Dashboard
+      # Step 5: HTTP POST with dynamic endpoint discovery (local LAN first, auto-fallback to telemetriafv.duckdns.org tunnel)
       - if:
           condition:
             lambda: 'return !id(telemetry_payload).empty();'
           then:
+            - lambda: |-
+                id(last_post_ok) = false;
+                if (id(active_webhook_url).empty()) {
+                  id(active_webhook_url) = "http://10.110.96.122:3000/api/telemetry";
+                }
             - http_request.post:
-                url: !secret dashboard_webhook_url
+                url: !lambda 'return id(active_webhook_url);'
                 request_headers:
                   Content-Type: application/json
                   X-Api-Key: !secret telemetry_api_key
@@ -507,7 +529,8 @@ interval:
                   then:
                     - lambda: |-
                         if (response->status_code == 200 || response->status_code == 201) {
-                          // Search for "next_interval_ms":<number> in response body
+                          id(last_post_ok) = true;
+                          id(post_fail_count) = 0;
                           size_t pos = body.find("\"next_interval_ms\":");
                           if (pos != std::string::npos) {
                             int next_ms = atoi(body.c_str() + pos + 19);
@@ -517,6 +540,35 @@ interval:
                             }
                           }
                         }
+            - lambda: |-
+                if (!id(last_post_ok)) {
+                  id(post_fail_count) += 1;
+                }
+            - if:
+                condition:
+                  lambda: 'return id(post_fail_count) >= 2;'
+                then:
+                  - lambda: 'id(post_fail_count) = 0;'
+                  - http_request.get:
+                      url: "https://telemetriafv.duckdns.org/runtime-config.json"
+                      capture_response: true
+                      on_response:
+                        then:
+                          - lambda: |-
+                              if (response->status_code == 200) {
+                                size_t keyPos = body.find("\"tunnel_url\"");
+                                if (keyPos != std::string::npos) {
+                                  size_t q1 = body.find("\"", body.find(":", keyPos));
+                                  if (q1 != std::string::npos) {
+                                    size_t q2 = body.find("\"", q1 + 1);
+                                    if (q2 != std::string::npos && q2 > q1 + 8) {
+                                      std::string tun = body.substr(q1 + 1, q2 - q1 - 1);
+                                      id(active_webhook_url) = tun + "/api/telemetry";
+                                      ESP_LOGI("EPEVER_TELEMETRY", "Endpoint dinamico atualizado via DuckDNS: %s", id(active_webhook_url).c_str());
+                                    }
+                                  }
+                                }
+                              }
 
 # Manual Reset button for peak power counter
 text_sensor:

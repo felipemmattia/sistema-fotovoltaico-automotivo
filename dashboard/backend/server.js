@@ -7,6 +7,8 @@
 const express = require('express');
 const http = require('http');
 const https = require('https');
+const net = require('net');
+const os = require('os');
 const path = require('path');
 const cors = require('cors');
 const crypto = require('crypto');
@@ -109,6 +111,7 @@ app.post('/api/telemetry', (req, res) => {
       return res.status(401).json({ success: false, error: 'Chave de API inválida' });
     }
 
+    lastDirectPostAt = Date.now();
     const { record: savedRecord, sanitized } = ingestTelemetryPacket(req.body, null);
 
     // Intervalo adaptativo: 10s quando sem usuários ativos; 1s a 5s conforme proximidade Wi-Fi (RSSI)
@@ -337,6 +340,155 @@ if (PUBLIC_KEEPALIVE_URL) {
     client.get(target, () => {}).on('error', () => {});
   }, 10 * 60 * 1000);
 }
+
+// ==============================================================================
+// Coletor Automático ESPHome na Rede Local (Fallback Pull se o IP do PC mudar)
+// ==============================================================================
+let lastDirectPostAt = 0;
+let discoveredEspIp = null;
+let espScanInProgress = false;
+let espPollInProgress = false;
+
+const ESP_SENSOR_MAP = [
+  ['pv_voltage', 'Tensão de Entrada FV (Painel)'],
+  ['pv_current', 'Corrente de Entrada FV (Painel)'],
+  ['pv_power', 'Potência de Entrada FV (Painel)'],
+  ['battery_voltage', 'Tensão de Carga Bateria'],
+  ['battery_current', 'Corrente de Carga Bateria'],
+  ['battery_power', 'Potência de Saída (Carga Bateria)'],
+  ['battery_soc', 'Estado de Carga Bateria (SOC)'],
+  ['external_temp', 'Temperatura da Bateria (Sensor Externo)'],
+  ['energy_today', 'Energia Gerada Hoje'],
+  ['energy_total', 'Energia Gerada Acumulada Total'],
+  ['wifi_rssi', 'WiFi Signal RSSI']
+];
+
+function httpGetJson(host, urlPath, timeoutMs = 2500) {
+  return new Promise((resolve) => {
+    const req = http.get({ host, port: 80, path: urlPath, timeout: timeoutMs }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        return resolve(null);
+      }
+      let body = '';
+      res.on('data', (c) => (body += c.toString('utf8')));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
+
+function checkPort80(ip, timeoutMs = 450) {
+  return new Promise((resolve) => {
+    const sock = new net.Socket();
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      resolve(ok);
+    };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => finish(true));
+    sock.once('timeout', () => finish(false));
+    sock.once('error', () => finish(false));
+    sock.connect(80, ip);
+  });
+}
+
+async function discoverLocalEsp32() {
+  if (espScanInProgress) return discoveredEspIp;
+  espScanInProgress = true;
+  try {
+    const ifaces = os.networkInterfaces();
+    const subnets = [];
+    for (const list of Object.values(ifaces)) {
+      for (const addr of list || []) {
+        if (addr.family === 'IPv4' && !addr.internal && !addr.address.startsWith('169.254.')) {
+          const parts = addr.address.split('.');
+          subnets.push({ prefix: `${parts[0]}.${parts[1]}.${parts[2]}`, self: Number(parts[3]) });
+        }
+      }
+    }
+
+    for (const sub of subnets) {
+      const candidates = [];
+      for (let i = 1; i <= 254; i++) {
+        if (i === sub.self) continue;
+        candidates.push(`${sub.prefix}.${i}`);
+      }
+      // Sonda em lotes paralelos de 64 IPs (leva < 1 segundo para toda a sub-rede)
+      for (let idx = 0; idx < candidates.length; idx += 64) {
+        const batch = candidates.slice(idx, idx + 64);
+        const results = await Promise.all(batch.map(async (ip) => ((await checkPort80(ip)) ? ip : null)));
+        for (const ip of results.filter(Boolean)) {
+          const probe = await httpGetJson(ip, '/sensor/' + encodeURIComponent('Tensão de Carga Bateria'), 12000);
+          if (probe && typeof probe.value === 'number') {
+            discoveredEspIp = ip;
+            console.log(`[AUTO-BRIDGE] ESP32-S3 descoberto automaticamente na rede local em http://${ip}`);
+            return ip;
+          }
+        }
+      }
+    }
+  } finally {
+    espScanInProgress = false;
+  }
+  return null;
+}
+
+async function pollDiscoveredEsp32() {
+  // Se o ESP32-S3 já estiver enviando HTTP POST diretamente nos últimos 15s, não precisa puxar
+  if (Date.now() - lastDirectPostAt < 15000) return;
+  if (espPollInProgress) return;
+  espPollInProgress = true;
+
+  try {
+    if (!discoveredEspIp) {
+      await discoverLocalEsp32();
+    }
+    if (!discoveredEspIp) return;
+
+    const payload = {
+      device_id: 'ESP32S3_EPEVER_01',
+      online: true
+    };
+    let okCount = 0;
+
+    for (const [field, sensorName] of ESP_SENSOR_MAP) {
+      const data = await httpGetJson(discoveredEspIp, '/sensor/' + encodeURIComponent(sensorName), 12000);
+      if (data && typeof data.value === 'number' && isFinite(data.value)) {
+        payload[field] = data.value;
+        okCount += 1;
+      }
+    }
+
+    if (okCount >= 3 && typeof payload.battery_voltage === 'number') {
+      payload.controller_temp = payload.external_temp;
+      payload.peak_pv_power = payload.pv_power || 0;
+      ingestTelemetryPacket(payload, { via: `local_esphome_pull:${discoveredEspIp}`, hops: 0 });
+    } else {
+      discoveredEspIp = null;
+    }
+  } catch {
+    discoveredEspIp = null;
+  } finally {
+    espPollInProgress = false;
+  }
+}
+
+setInterval(pollDiscoveredEsp32, 4000);
+setTimeout(pollDiscoveredEsp32, 2500);
 
 server.listen(PORT, () => {
   console.log('=======================================================');
