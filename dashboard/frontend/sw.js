@@ -4,15 +4,15 @@
  * para carregamento imediato mesmo sob sinal Wi-Fi fraco a grandes distâncias do veículo.
  */
 
-const CACHE_NAME = 'solar-telemetry-v11';
+const CACHE_NAME = 'solar-telemetry-v12';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/css/style.css?v=20261121f',
-  '/js/models3d.js?v=20261126a',
-  '/js/charts.js?v=20261126a',
-  '/js/mesh.js?v=20261126a',
-  '/js/app.js?v=20261126a'
+  '/js/models3d.js?v=20261126b',
+  '/js/charts.js?v=20261126b',
+  '/js/mesh.js?v=20261126b',
+  '/js/app.js?v=20261126b'
 ];
 
 self.addEventListener('install', (event) => {

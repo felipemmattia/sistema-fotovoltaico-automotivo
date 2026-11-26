@@ -122,30 +122,33 @@ document.addEventListener('DOMContentLoaded', () => {
       backendOrigin = '';
       return '';
     }
-    try {
-      const ghRes = await fetch(
-        `https://api.github.com/repos/felipemmattia/sistema-fotovoltaico-automotivo/contents/runtime-config.json?ref=gh-pages&_=${Date.now()}`,
-        { headers: { Accept: 'application/vnd.github.v3.raw' }, cache: 'no-store' }
-      );
-      if (ghRes.ok) {
-        const cfg = await ghRes.json();
-        if (cfg && cfg.tunnel_url) {
-          backendOrigin = cfg.tunnel_url.replace(/\/+$/, '');
-          return backendOrigin;
-        }
+    const sources = [
+      {
+        url: `https://raw.githubusercontent.com/felipemmattia/sistema-fotovoltaico-automotivo/gh-pages/runtime-config.json?_=${Date.now()}`,
+        headers: {}
+      },
+      {
+        url: `/runtime-config.json?_=${Date.now()}`,
+        headers: {}
+      },
+      {
+        url: `https://api.github.com/repos/felipemmattia/sistema-fotovoltaico-automotivo/contents/runtime-config.json?ref=gh-pages&_=${Date.now()}`,
+        headers: { Accept: 'application/vnd.github.v3.raw' }
       }
-    } catch {}
+    ];
 
-    try {
-      const localRes = await fetch(`/runtime-config.json?_=${Date.now()}`, { cache: 'no-store' });
-      if (localRes.ok) {
-        const cfg = await localRes.json();
-        if (cfg && cfg.tunnel_url) {
-          backendOrigin = cfg.tunnel_url.replace(/\/+$/, '');
-          return backendOrigin;
+    for (const src of sources) {
+      try {
+        const res = await fetch(src.url, { headers: src.headers, cache: 'no-store' });
+        if (res.ok) {
+          const cfg = await res.json();
+          if (cfg && cfg.tunnel_url) {
+            backendOrigin = cfg.tunnel_url.replace(/\/+$/, '');
+            return backendOrigin;
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
 
     return backendOrigin;
   }

@@ -176,12 +176,12 @@ while ($true) {
                 Publish-TunnelEndpoint -tunnelUrl $publishedUrl
                 $lastHealthCheck = [DateTime]::UtcNow
             }
-        } elseif ($publishedUrl -and (([DateTime]::UtcNow - $lastHealthCheck).TotalSeconds -ge 35)) {
+        } elseif ($publishedUrl -and (([DateTime]::UtcNow - $lastHealthCheck).TotalSeconds -ge 45)) {
             $lastHealthCheck = [DateTime]::UtcNow
             # Garante primeiro que o backend local esta ativo antes de testar o tunel externo
             Ensure-BackendRunning | Out-Null
             try {
-                $hc = Invoke-RestMethod -Uri "$publishedUrl/api/health" -TimeoutSec 8 -ErrorAction Stop
+                $hc = Invoke-RestMethod -Uri "$publishedUrl/api/health" -TimeoutSec 12 -ErrorAction Stop
                 if ($hc -and $hc.status -eq "UP") {
                     $failCount = 0
                 } else {
@@ -190,7 +190,7 @@ while ($true) {
             } catch {
                 $failCount++
             }
-            if ($failCount -ge 3) {
+            if ($failCount -ge 5) {
                 Write-Host "[24/7] Reconectando tunel apos mudanca de rede ou suspensao..." -ForegroundColor Yellow
                 Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
                 break
