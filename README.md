@@ -90,6 +90,13 @@ It automatically downloads portable Node.js, GitHub CLI (`gh`), and `cloudflared
 
 *(Alternative via Docker: `cd dashboard && docker compose up -d --build`, then open `http://localhost:3000`.)*
 
+### Full Technical Documentation
+- [Complete System Architecture, REST/WebSocket API & Modbus Register Map](docs/ARCHITECTURE.md)
+- [Vehicle Hardware BOM, Electrical Wiring, RJ45 Pinout & Epever Automotive Calibration](docs/HARDWARE_WIRING.md)
+- [Deployment Guide: 24/7 Portable Classroom Server, Fixed DuckDNS Domain, Multi-Wi-Fi & Wireless OTA](docs/DEPLOYMENT_GUIDE.md)
+- [Error Handling, Modbus 0x3200–0x3202 Fault Decoding & Field Troubleshooting Log](docs/ERROR_HANDLING_RECOVERY.md)
+- [Engineering Stack Justification, WebGL PBR 3D Engine, Clamping Limits & Formulas](docs/STACK_JUSTIFICATION.md)
+
 ---
 
 <a id="versão-em-português-brasileiro"></a>
@@ -146,10 +153,10 @@ O script baixa automaticamente Node.js portátil, GitHub CLI (`gh`) e `cloudflar
 
 *(Alternativa via Docker: `cd dashboard && docker compose up -d --build` e acesse `http://localhost:3000`.)*
 
-### Documentação Completa
+### Documentação Técnica Completa
 
-- [Arquitetura do Sistema e Mapa de Registradores Modbus](docs/ARCHITECTURE.md)
-- [Esquema Elétrico, Conector RJ45 e Pinagem do ESP32-S3](docs/HARDWARE_WIRING.md)
-- [Guia de Implantação, Acesso Público Gratuito e Rede Mesh P2P](docs/DEPLOYMENT_GUIDE.md)
-- [Tratamento de Erros, Diagnóstico Modbus e Recuperação](docs/ERROR_HANDLING_RECOVERY.md)
-- [Justificativa Técnica da Stack e Limites de Sanitização](docs/STACK_JUSTIFICATION.md)
+- [Arquitetura Completa, Fluxo de Dados, API REST/WebSocket e Mapa de Registradores Modbus](docs/ARCHITECTURE.md)
+- [Hardware Instalado na Amarok (BOM), Esquema Elétrico, Pinagem RJ45 e Calibração Automotiva da Epever](docs/HARDWARE_WIRING.md)
+- [Guia de Implantação: Servidor 24/7 Portátil, Domínio Fixo DuckDNS, Multi-Wi-Fi e OTA Sem Fio](docs/DEPLOYMENT_GUIDE.md)
+- [Tratamento de Erros, Diagnóstico Modbus (0x3200–0x3202), Resiliência e Soluções de Campo](docs/ERROR_HANDLING_RECOVERY.md)
+- [Justificativa Técnica da Stack, Motor 3D WebGL PBR, Limites de Sanitização e Fórmulas](docs/STACK_JUSTIFICATION.md)
