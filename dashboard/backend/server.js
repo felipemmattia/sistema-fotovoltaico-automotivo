@@ -360,7 +360,10 @@ const ESP_SENSOR_MAP = [
   ['external_temp', 'Temperatura da Bateria (Sensor Externo)'],
   ['energy_today', 'Energia Gerada Hoje'],
   ['energy_total', 'Energia Gerada Acumulada Total'],
-  ['wifi_rssi', 'WiFi Signal RSSI']
+  ['wifi_rssi', 'WiFi Signal RSSI'],
+  ['battery_status', 'Registrador de Status da Bateria (0x3200)'],
+  ['charging_status', 'Registrador de Status do Carregador (0x3201)'],
+  ['discharging_status', 'Registrador de Status da Descarga (0x3202)']
 ];
 
 function httpGetJson(host, urlPath, timeoutMs = 2500) {

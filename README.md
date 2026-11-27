@@ -20,8 +20,10 @@ This project is a Capstone Thesis (*Trabalho de Conclusão de Curso — TCC*) de
   - Reads solar array voltage (`0x3100`), current (`0x3101`), and power (`0x3102`); battery charging voltage (`0x3104`), current (`0x3105`), power (`0x3106`), state of charge (`0x311A`), and external NTC battery temperature (`0x3110`); daily (`0x330C`) and cumulative (`0x3312`) energy generation.
 - **Real-Time Controller Fault & Alarm Diagnostics (`0x3200` / `0x3201` / `0x3202`)**:
   - Decodes hardware status bitmasks in real time (battery overvoltage, undervoltage, deep-discharge LVD, battery overheating, MOSFET short/open faults, PV input overvoltage/short-circuit, load short/overcurrent, and active charging stage: *Boost*, *Float*, or *Equalization*) and displays alerts directly in the dashboard header.
-- **Proximity-Adaptive Telemetry Rate (Wi-Fi RSSI + Active Viewers)**:
-  - Automatically adjusts the ESP32-S3 reporting cadence between **1 s** (strong Wi-Fi signal, `>= -55 dBm`), **2 s** (`-70` to `-55 dBm`), **5 s** (`< -70 dBm`), and **10 s** when no users are viewing the dashboard.
+- **Multi-Wi-Fi Failover, Wireless OTA & Instant Dynamic Endpoint Discovery**:
+  - Supports prioritized multi-Wi-Fi networks (institutional Wi-Fi + mobile hotspot override), native encrypted wireless OTA updates (port `3232`), and automatic HTTPS endpoint resolution via `raw.githubusercontent.com` (with `telemetriafv.duckdns.org` fallback) so the vehicle seamlessly reaches the classroom server even across separate networks or after server reboots.
+- **Zero-Cost 24/7 Portable Classroom Server & Fixed Domain (`https://telemetriafv.duckdns.org`)**:
+  - Runs natively via `iniciar_servidor_24_7.bat` / `scripts/start_public_tunnel.ps1` without Docker, `winget`, or Windows Administrator privileges (automatically provisioning portable Node.js, GitHub CLI, and Cloudflare Tunnel, registering silent Windows Startup, and syncing the active HTTPS tunnel to `gh-pages`).
 - **Cooperative P2P Mesh Repeater (`WebRTC DataChannel` + Offline-First Service Worker)**:
   - Every connected browser acts as a **P2P telemetry repeater node**. Users closer to the vehicle automatically relay real-time telemetry packets across up to 3 hops over WebRTC `RTCDataChannel`s to users farther away, while a Service Worker caches static assets and 3D models locally so the interface loads instantaneously even under weak signal conditions.
 - **Interactive 3D WebGL PBR Models & Reactive UI**:
@@ -56,9 +58,11 @@ This project is a Capstone Thesis (*Trabalho de Conclusão de Curso — TCC*) de
 │   │       └── charts.js             # Historical time-series chart controller (Chart.js)
 │   ├── Dockerfile                    # Production container image definition
 │   └── docker-compose.yml            # Docker Compose service configuration
+├── iniciar_servidor_24_7.bat         # One-click 24/7 portable server & HTTPS tunnel launcher
 ├── scripts/
+│   ├── configure_epever_automotive.ps1 # Epever XTRA 2210N automotive battery calibration (12V / 80Ah)
 │   ├── epever_modbus_bridge.ps1      # Direct USB-RS485 serial bridge for bench testing
-│   └── start_public_tunnel.ps1       # Zero-cost public HTTPS tunnel (Cloudflare Quick Tunnel)
+│   └── start_public_tunnel.ps1       # Portable 24/7 Node.js + Cloudflare Tunnel + DuckDNS supervisor
 └── docs/
     ├── ARCHITECTURE.md               # System architecture, register table & data flow
     ├── HARDWARE_WIRING.md            # RJ45 pinout & Waveshare ESP32-S3 GPIO mapping
@@ -77,18 +81,14 @@ cp secrets.yaml.example secrets.yaml
 esphome run epever_solar_esp32s3.yaml
 ```
 
-#### 2. Run the Dashboard Server (Docker)
-```bash
-cd dashboard
-docker compose up -d --build
-```
-Open **`http://localhost:3000`** in your browser.
-
-#### 3. Expose Publicly for Free (No Domain or Paid Server Required)
-To share the live dashboard with evaluators and students at **SENAI** over a free public `https://` URL:
+#### 2. Run the 24/7 Portable Classroom Server (No Docker or Admin Required)
+Double-click **`iniciar_servidor_24_7.bat`** (or run in PowerShell):
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\start_public_tunnel.ps1
 ```
+It automatically downloads portable Node.js, GitHub CLI (`gh`), and `cloudflared`, starts the backend on port `3000`, publishes the live HTTPS tunnel to **`https://telemetriafv.duckdns.org`**, and registers silent Windows Startup.
+
+*(Alternative via Docker: `cd dashboard && docker compose up -d --build`, then open `http://localhost:3000`.)*
 
 ---
 
@@ -110,6 +110,10 @@ Este projeto integra o **Trabalho de Conclusão de Curso (TCC)** desenvolvido no
   - Aquisição de tensão (`0x3100`), corrente (`0x3101`) e potência (`0x3102`) do arranjo solar; tensão (`0x3104`), corrente (`0x3105`), potência (`0x3106`), estado de carga (`0x311A`) e temperatura externa da bateria via sensor NTC (`0x3110`); energia gerada no dia (`0x330C`) e acumulada total (`0x3312`).
 - **Diagnóstico de Erros e Alarmes da Controladora no Cabeçalho (`0x3200` / `0x3201` / `0x3202`)**:
   - Decodifica em tempo real os registradores de status e falhas da Epever (sobretensão, subtensão, desconexão por descarga profunda `LVD`, superaquecimento da bateria, curto-circuito ou abertura de MOSFETs, sobretensão/curto nos painéis FV, sobrecorrente na carga e estágio atual de carregamento: *Boost/Absorção*, *Flutuação* ou *Equalização*), exibindo alertas imediatamente no cabeçalho da página.
+- **Multi-Wi-Fi com Prioridade, OTA Sem Fio e Descoberta Instantânea de Servidor**:
+  - Suporte a múltiplas redes Wi-Fi com prioridade (Wi-Fi da instituição + hotspot móvel de contingência), atualização de firmware **100% sem fio via OTA nativo (porta 3232)** e descoberta automática do túnel HTTPS ativo via `raw.githubusercontent.com` (com fallback em `telemetriafv.duckdns.org`), permitindo comunicação entre redes totalmente separadas e reconexão automática em ~15 s após reinício do servidor.
+- **Servidor Portátil 24/7 Gratuito com Domínio Fixo (`https://telemetriafv.duckdns.org`)**:
+  - Executa nativamente via `iniciar_servidor_24_7.bat` / `scripts/start_public_tunnel.ps1`, sem precisar de Docker, `winget` ou permissão de Administrador no Windows (baixa automaticamente Node.js portátil, GitHub CLI e Cloudflare Tunnel, registra inicialização silenciosa no Windows e sincroniza a URL ativa na branch `gh-pages`).
 - **Cadência Adaptativa por Proximidade Wi-Fi (RSSI + Presença de Usuários)**:
   - Ajusta dinamicamente o intervalo de envio do ESP32-S3 entre **1 s** (sinal Wi-Fi forte, `>= -55 dBm`), **2 s** (`-70` a `-55 dBm`), **5 s** (`< -70 dBm`) e **10 s** quando não há espectadores conectados ao site.
 - **Modo Repetidor Cooperativo em Rede Mesh P2P (`WebRTC DataChannel` + Service Worker Offline-First)**:
@@ -133,19 +137,14 @@ cp secrets.yaml.example secrets.yaml
 esphome run epever_solar_esp32s3.yaml
 ```
 
-#### 2. Iniciar o Servidor do Dashboard via Docker
-```bash
-cd dashboard
-docker compose up -d --build
-```
-Acesse **`http://localhost:3000`** no navegador.
-
-#### 3. Colocar o Site no Ar Gratuitamente para Apresentação no SENAI
-Execute o script de túnel público gratuito (Cloudflare Quick Tunnel — sem custo de domínio nem de servidor):
+#### 2. Iniciar o Servidor 24/7 no Computador da Sala (Portátil — sem Docker e sem Admin)
+Basta executar **`iniciar_servidor_24_7.bat`** (ou rodar no PowerShell):
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\start_public_tunnel.ps1
 ```
-O terminal fornecerá um endereço público `https://....trycloudflare.com` (com suporte a HTTPS, WebSockets `wss://` e Mesh P2P) que pode ser acessado de qualquer celular (4G/5G ou Wi-Fi) ou computador.
+O script baixa automaticamente Node.js portátil, GitHub CLI (`gh`) e `cloudflared`, sobe o backend na porta `3000`, publica o endereço ao vivo no domínio fixo **`https://telemetriafv.duckdns.org`** (com suporte completo a HTTPS, WebSockets `wss://` e Mesh P2P) e cria o atalho silencioso na inicialização do Windows.
+
+*(Alternativa via Docker: `cd dashboard && docker compose up -d --build` e acesse `http://localhost:3000`.)*
 
 ### Documentação Completa
 
